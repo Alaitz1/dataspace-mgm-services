@@ -27,8 +27,9 @@ from __future__ import annotations
 
 from portal_common import tokens
 
+from modules.c2_m3 import config
 from modules.c2_m3.models import TechnicalUserRecord, Viewer, WalletAccess
-from . import config, iam_access
+from . import iam_access
 
 
 def summary(row: TechnicalUserRecord, viewer: Viewer) -> dict:

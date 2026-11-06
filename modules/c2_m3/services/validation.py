@@ -31,7 +31,7 @@ from pydantic import BaseModel, ValidationError
 
 from portal_common.problems import Problem
 
-from .config import MODULE
+from modules.c2_m3.config import MODULE
 
 Model = TypeVar("Model", bound=BaseModel)
 _MAX_ISSUES = 5

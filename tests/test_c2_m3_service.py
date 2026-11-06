@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import pytest
 
-from modules.c2_m3 import iam, service
+from modules.c2_m3 import iam
+from modules.c2_m3 import services as service
 from modules.c2_m3.iam import IamError
 from modules.c2_m3.repository import repository
 from portal_common import events

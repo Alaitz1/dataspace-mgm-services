@@ -29,13 +29,13 @@ import contextlib
 
 from portal_common.problems import Problem
 
-from modules.c2_m3 import gateways
+from modules.c2_m3 import config, gateways
+from modules.c2_m3.config import MODULE
 from modules.c2_m3.models import Origin, TechnicalUserRecord, Viewer
 from modules.c2_m3.repository import repository
 from modules.c2_m3.schemas import SubscriptionCredentialsRequest, TechnicalUserCreate, TechnicalUserUpdate
-from . import accounts, audit, config, iam_access, projections, roles, state, validation
+from . import accounts, audit, iam_access, projections, roles, state, validation
 from .audit import Actor
-from .config import MODULE
 
 
 def create_technical_user(*, company_id: str, body: dict, actor_sub: str) -> dict:

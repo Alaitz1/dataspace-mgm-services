@@ -29,11 +29,12 @@ import uuid
 
 from portal_common.problems import Problem
 
+from modules.c2_m3 import config
+from modules.c2_m3.config import MODULE
 from modules.c2_m3.models import Origin, Status, SubscriptionParty, TechnicalUserRecord, Viewer, WalletAccess
 from modules.c2_m3.repository import repository
-from . import audit, config, iam_access, state
+from . import audit, iam_access, state
 from .audit import Actor
-from .config import MODULE
 
 
 def find(user_id: str | None) -> TechnicalUserRecord:

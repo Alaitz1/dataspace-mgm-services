@@ -29,7 +29,7 @@ from collections.abc import Callable
 
 from portal_common import standin
 
-from modules.c2_m3 import gateways
+from modules.c2_m3 import config, gateways
 from modules.c2_m3.models import LIVE_STATUSES, Origin, Status, SubscriptionParty, TechnicalUserRecord
 from modules.c2_m3.repository import repository
 from modules.c2_m3.schemas import (
@@ -39,7 +39,7 @@ from modules.c2_m3.schemas import (
     StepSubscriptionRef,
     StepTechnicalUserRef,
 )
-from . import accounts, audit, config, iam_access, roles, state, validation
+from . import accounts, audit, iam_access, roles, state, validation
 from .audit import Actor
 
 

@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from portal_common.problems import Problem
 
-from modules.c2_m3 import gateways
-from . import config, iam_access
-from .config import MODULE
+from modules.c2_m3 import config, gateways
+from modules.c2_m3.config import MODULE
+from . import iam_access
 
 
 def split(roles: list[str]) -> tuple[bool, list[str]]:

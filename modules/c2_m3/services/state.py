@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from portal_common.problems import Problem
 
+from modules.c2_m3.config import MODULE
 from modules.c2_m3.models import Origin, Status, SubscriptionParty, TechnicalUserRecord, WalletAccess
-from .config import MODULE
 
 
 def _invalid_state() -> Problem:

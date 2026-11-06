@@ -32,7 +32,8 @@ import jwt
 import pytest
 
 from conftest import BASE
-from modules.c2_m3 import iam, service
+from modules.c2_m3 import iam
+from modules.c2_m3 import services as service
 from modules.c2_m3.iam import IamError
 from modules.c2_m3.repository import repository
 from portal_common import http as phttp

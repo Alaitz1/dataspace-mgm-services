@@ -30,8 +30,8 @@ import httpx
 from portal_common.problems import Problem
 
 from modules.c2_m3 import iam as iam_package
+from modules.c2_m3.config import MODULE
 from modules.c2_m3.iam import IamConflict, IamError, TechnicalUserIam, UnknownRole
-from .config import MODULE
 
 
 def iam() -> TechnicalUserIam:
