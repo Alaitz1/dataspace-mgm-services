@@ -22,7 +22,49 @@
 #################################################################################
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TypedDict
+
+
+class Status(StrEnum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    PENDING_DELETION = "PENDING_DELETION"
+    DELETED = "DELETED"
+
+
+class WalletAccess(StrEnum):
+    NONE = "NONE"
+    REQUESTED = "REQUESTED"
+    ACTIVE = "ACTIVE"
+    FAILED = "FAILED"
+    REMOVING = "REMOVING"
+
+
+class Origin(StrEnum):
+    OWN = "OWN"
+    SUBSCRIPTION = "SUBSCRIPTION"
+
+
+class SubscriptionParty(StrEnum):
+    CUSTOMER = "CUSTOMER"
+    PROVIDER = "PROVIDER"
+
+
+class ActorType(StrEnum):
+    PERSON = "PERSON"
+    PROCESS = "PROCESS"
+
+
+class Viewer(StrEnum):
+    OWNER = "OWNER"
+    CO_VIEWER = "CO_VIEWER"
+    OSP = "OSP"
+
+
+LIVE_STATUSES = (Status.PENDING, Status.ACTIVE, Status.INACTIVE, Status.PENDING_DELETION)
+DEFAULT_LIST_STATUSES = (Status.PENDING, Status.ACTIVE, Status.PENDING_DELETION)
 
 
 class TechnicalUserRecord(TypedDict):
@@ -30,15 +72,15 @@ class TechnicalUserRecord(TypedDict):
     company_id: str
     name: str
     description: str | None
-    origin: str
+    origin: Origin
     offer_subscription_id: str | None
-    subscription_party: str | None
+    subscription_party: SubscriptionParty | None
     co_viewer_company_id: str | None
     iam_client_id: str
     iam_client_uuid: str | None
     iam_service_account_user_id: str | None
-    status: str
-    wallet_access: str
+    status: Status
+    wallet_access: WalletAccess
     wallet_account_ref: str | None
     disabled: bool
     created_at: str
@@ -48,7 +90,7 @@ class TechnicalUserRecord(TypedDict):
 class AuditLogRecord(TypedDict):
     id: str
     occurred_at: str
-    actor_type: str
+    actor_type: ActorType
     actor_sub: str | None
     company_id: str
     process_id: str | None
@@ -65,7 +107,7 @@ class RoleAssignmentLogRecord(TypedDict):
     iam_client_id: str
     role_name: str
     action: str
-    actor_type: str
+    actor_type: ActorType
     actor_sub: str | None
     process_id: str | None
     step_run_id: str | None

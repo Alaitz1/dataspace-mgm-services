@@ -20,8 +20,46 @@
 #  SPDX-License-Identifier: Apache-2.0 AND CC0-1.0
 #  Assisted-By: GitHub Copilot (GPT-5.1)
 #################################################################################
-"""C2-M3 application services."""
+"""C2-M3 application services: `queries` read, `commands` are people's operations, `steps` are Process Orchestration's."""
 
-from . import technical_users
+from modules.c2_m3 import iam as _iam
+from modules.c2_m3.repository import repository as _repository
+from .commands import (
+    create_technical_user,
+    delete_technical_user,
+    rotate_credentials,
+    rotate_subscription_credentials,
+    update_technical_user,
+)
+from .process_stub import handle_event
+from .queries import (
+    check_technical_user,
+    get_any_technical_user,
+    get_technical_user,
+    list_all_technical_users,
+    list_technical_users,
+)
+from .roles import list_assignable_roles, list_technical_roles
+from .steps import (
+    apply_wallet_access,
+    create_for_subscription,
+    delete,
+    disable_company_technical_users,
+    disable_subscription_technical_users,
+    enable_company_technical_users,
+)
 
-__all__ = ["technical_users"]
+
+def reset() -> None:
+    _repository.reset()
+    _iam.reset()
+
+
+__all__ = [
+    "apply_wallet_access", "check_technical_user", "create_for_subscription", "create_technical_user", "delete",
+    "delete_technical_user", "disable_company_technical_users", "disable_subscription_technical_users",
+    "enable_company_technical_users", "get_any_technical_user", "get_technical_user", "handle_event",
+    "list_all_technical_users",
+    "list_assignable_roles", "list_technical_roles", "list_technical_users", "reset", "rotate_credentials",
+    "rotate_subscription_credentials", "update_technical_user",
+]

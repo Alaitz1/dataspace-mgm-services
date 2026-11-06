@@ -22,5 +22,5 @@
 #################################################################################
 """Compatibility import for the C2-M3 application service."""
 
-from .services.technical_users import *  # noqa: F403
-from .services.technical_users import audit_log, role_assignment_log, technical_users
+from .services import *  # noqa: F403
+from .services import __all__  # noqa: F401
