@@ -117,20 +117,8 @@ def _company(company_id: str) -> dict:
     if not company_id:
         raise Problem(MODULE, 404, "not-found")
     if neighbours.is_standin("c3-m1"):
-        companies = {
-            "11111111-1111-4111-8111-111111111111": {
-                "id": "11111111-1111-4111-8111-111111111111", "status": "ACTIVE",
-                "bpn": "BPNL00000000OSPA", "companyRoles": ["ONBOARDING_SERVICE_PROVIDER", "ACTIVE_PARTICIPANT"]},
-            "c0000001-0000-4000-8000-000000000001": {
-                "id": "c0000001-0000-4000-8000-000000000001", "status": "ACTIVE",
-                "bpn": "BPNLIUK2REMLK3F4", "companyRoles": ["ACTIVE_PARTICIPANT"]},
-            "c0000002-0000-4000-8000-000000000002": {
-                "id": "c0000002-0000-4000-8000-000000000002", "status": "ACTIVE",
-                "bpn": "BPNL00000000U2LG", "companyRoles": ["ACTIVE_PARTICIPANT", "APP_PROVIDER"]},
-            "c0000003-0000-4000-8000-000000000003": {
-                "id": "c0000003-0000-4000-8000-000000000003", "status": "REQUESTED",
-                "bpn": None, "companyRoles": []},
-        }
+        stub_path = Path(__file__).resolve().parents[1] / "stub-companies.json"
+        companies = json.loads(stub_path.read_text(encoding="utf-8"))["companies"]
         company = companies.get(company_id)
     else:
         company = neighbours.query(MODULE, "c3-m1", "query_company", companyId=company_id)
@@ -245,6 +233,11 @@ def _visible(row: dict, company_id: str) -> str:
     raise Problem(MODULE, 404, "not-found", retryable=False)
 
 
+def _owned(row: dict, company_id: str) -> None:
+    if _visible(row, company_id) != "OWNER":
+        raise Problem(MODULE, 403, "not-owner", retryable=False)
+
+
 def get_technical_user(*, id: str, company_id: str, **_other) -> dict:
     row = _find(id)
     return _details(row, _visible(row, company_id))
@@ -257,7 +250,7 @@ def get_any_technical_user(*, id: str, **_other) -> dict:
 def _page(rows: list[dict], *, page: int, size: int) -> dict:
     if page < 0 or size < 1 or size > 100:
         raise Problem(MODULE, 400, "validation", detail="page must be >= 0 and size must be 1..100")
-    rows.sort(key=lambda row: row["created_at"], reverse=True)
+    rows.sort(key=lambda row: row["createdAt"], reverse=True)
     start = page * size
     return {"items": rows[start:start + size], "page": page, "size": size, "total": len(rows)}
 
@@ -287,7 +280,7 @@ def list_all_technical_users(*, page: int = 0, size: int = 20, company_id: str |
     if statuses is None:
         statuses = ["PENDING", "ACTIVE", "PENDING_DELETION"]
     rows = [_summary(row, "OSP") for row in technical_users.values()
-            if (not company_id or row["company_id"] == company_id or row["co_viewer_company_id"] == company_id)
+            if (company_id is None or row["company_id"] == company_id)
             and row["status"] in statuses and (not origin or row["origin"] == origin)
             and (not wallet_access or row["wallet_access"] == wallet_access)
             and (disabled is None or row["disabled"] is disabled)]
@@ -344,7 +337,10 @@ def _wallet_requested_event(row: dict) -> None:
                     "companyId": row["company_id"], "offerSubscriptionId": row["offer_subscription_id"]})
 
 
-def _validate_create(body: dict, *, max_name: int) -> list[str]:
+def _validate_create(body: dict, *, max_name: int, extra_fields: frozenset[str] = frozenset()) -> list[str]:
+    allowed = {"name", "description", "authMethod", "roles"} | extra_fields
+    if not isinstance(body, dict) or set(body) - allowed:
+        raise Problem(MODULE, 400, "validation", detail="request contains unsupported fields")
     name = body.get("name")
     if not isinstance(name, str) or not 1 <= len(name) <= max_name:
         raise Problem(MODULE, 400, "validation", detail=f"name must contain 1..{max_name} characters")
@@ -444,11 +440,12 @@ def _audit_role_changes(row: TechnicalUserRecord, added: list[str], removed: lis
                     operation="updateTechnicalUser")
 
 
-def update_technical_user(*, id: str, body: dict, actor_sub: str) -> dict:
+def update_technical_user(*, id: str, company_id: str, body: dict, actor_sub: str) -> dict:
     row = _find(id)
+    _owned(row, company_id)
+    _validate_update(body)
     if row["status"] != "ACTIVE" or row["disabled"]:
         raise Problem(MODULE, 409, "invalid-state")
-    _validate_update(body)
     added, removed = _update_roles(row, body)
     metadata_changed = _update_client_metadata(row, body)
     if added or removed or metadata_changed:
@@ -467,8 +464,9 @@ def _query_neighbour(target: str, function: str, **params):
     return neighbours.query(MODULE, target, function, **params)
 
 
-def delete_technical_user(*, id: str, actor_sub: str) -> tuple[int, dict | None]:
+def delete_technical_user(*, id: str, company_id: str, actor_sub: str) -> tuple[int, dict | None]:
     row = _find(id)
+    viewer_role = _visible(row, company_id)
     if row["wallet_access"] == "REQUESTED":
         raise Problem(MODULE, 409, "wallet-in-progress")
     if row["status"] not in ("ACTIVE", "INACTIVE"):
@@ -488,7 +486,7 @@ def delete_technical_user(*, id: str, actor_sub: str) -> tuple[int, dict | None]
             _audit(row, "deleteTechnicalUser", actor_type="PERSON", actor_sub=actor_sub)
             events.publish(MODULE, "WalletAccessRemovalRequested", {"technicalUserId": row["id"],
                             "companyId": row["company_id"], "walletAccountRef": row["wallet_account_ref"]})
-            return 202, _details(row, "OWNER")
+            return 202, _details(row, viewer_role)
         roles = _iam_call(iam_adapter.get().roles_for, row["iam_client_id"])
         _iam_call(iam_adapter.get().delete, row["iam_client_id"])
         row["status"], row["wallet_access"], row["wallet_account_ref"] = "DELETED", "NONE", None
@@ -503,8 +501,9 @@ def delete_technical_user(*, id: str, actor_sub: str) -> tuple[int, dict | None]
         return 204, None
 
 
-def rotate_credentials(*, id: str, actor_sub: str) -> dict:
+def rotate_credentials(*, id: str, company_id: str, actor_sub: str) -> dict:
     row = _find(id)
+    _owned(row, company_id)
     if row["status"] not in ("ACTIVE", "PENDING") or not row["iam_client_uuid"] or row["disabled"]:
         raise Problem(MODULE, 409, "invalid-state")
     secret = _iam_call(iam_adapter.get().rotate_secret, row["iam_client_id"])
@@ -550,8 +549,8 @@ def _create_subscription_account(*, input: dict, party: str, company: dict, name
                        offer_subscription_id=subscription_id, subscription_party=party,
                        co_viewer_company_id=co_viewer_company_id)
         row["name"] = f"{row['iam_client_id']}-{name}"
-    wallet_roles = _wallet_roles() if party == "CUSTOMER" else set()
-    assigned_roles = sorted(set(roles) - wallet_roles)
+    wallet_roles = set(roles) & _wallet_roles() if party == "CUSTOMER" else set()
+    assigned_roles = sorted(set(roles) - _wallet_roles())
     was_created = row["iam_client_uuid"] is None
     previous_roles = set(_iam_call(iam_adapter.get().roles_for, row["iam_client_id"])) if not was_created else set()
     created = _iam_call(iam_adapter.get().create_or_complete, row["iam_client_id"], name=row["name"],
@@ -578,7 +577,13 @@ def _create_subscription_account(*, input: dict, party: str, company: dict, name
 
 
 def create_for_subscription(input: dict) -> dict:
-    roles = _validate_create(input, max_name=200)
+    roles = _validate_create(input, max_name=200, extra_fields=frozenset({
+        "processId", "stepRunId", "customerCompanyId", "providerCompanyId", "offerSubscriptionId",
+    }))
+    if not all(isinstance(input.get(key), str) and input[key]
+               for key in ("customerCompanyId", "providerCompanyId", "offerSubscriptionId")):
+        raise Problem(MODULE, 400, "validation", retryable=False,
+                      detail="customerCompanyId, providerCompanyId and offerSubscriptionId are required")
     _check_roles_exist(roles)
     _company_ready(input.get("customerCompanyId"))
     provider_roles = set(roles) & _provider_roles()

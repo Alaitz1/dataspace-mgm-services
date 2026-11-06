@@ -30,6 +30,7 @@ from portal_common.problems import Problem
 
 CUSTOMER = "c0000001-0000-4000-8000-000000000001"
 PROVIDER = "c0000002-0000-4000-8000-000000000002"
+OSP_COMPANY = "11111111-1111-4111-8111-111111111111"
 SUBSCRIPTION = "0b5d7e2a-3c4f-4a1b-9e8d-7f6a5b4c3d21"
 ACTOR = "5a1c0002-0000-4000-8000-000000000002"
 
@@ -94,6 +95,8 @@ def test_subscription_creation_is_idempotent_and_splits_provider_roles(c2m3):
     assert customer_row["wallet_access"] == "REQUESTED"
     assert provider_row["company_id"] == PROVIDER
     assert provider_row["co_viewer_company_id"] is None
+    provider_filtered = service.list_all_technical_users(company_id=PROVIDER)
+    assert {item["id"] for item in provider_filtered["items"]} == {provider_row["id"]}
     assert iam.get().roles_for(customer_row["iam_client_id"]) == ["Dataspace Discovery"]
     assert iam.get().roles_for(provider_row["iam_client_id"]) == ["BPDM Sharing Output Consumer"]
     assert service.check_technical_user(id=customer_row["id"], company_id=CUSTOMER)["usableForConnector"] is False
@@ -120,6 +123,17 @@ def test_role_assignment_and_company_readiness_are_enforced(c2m3):
     assert not service.technical_users
 
 
+def test_create_rejects_undeclared_fields(c2m3):
+    with pytest.raises(Problem) as error:
+        service.create_technical_user(company_id=CUSTOMER,
+            body={"name": "Unexpected", "roles": [{"name": "Dataspace Discovery"}], "extra": True},
+            actor_sub=ACTOR)
+    assert error.value.status == 400
+    assert error.value.name == "validation"
+    assert not service.technical_users
+    assert not iam.get().clients
+
+
 def test_role_list_queries_work_with_memory_iam(c2m3):
     roles = service.list_technical_roles(lang="en")
     discovery = next(role for role in roles if role["name"] == "Dataspace Discovery")
@@ -132,6 +146,14 @@ def test_role_list_queries_work_with_memory_iam(c2m3):
     assignable = service.list_assignable_roles(company_id=CUSTOMER, lang="en")
     assert {role["name"] for role in assignable} == {
         "Dataspace Discovery", "Identity Wallet Management", "Semantic Model Management",
+    }
+
+
+def test_osp_company_standin_includes_all_framework_roles(c2m3):
+    roles = service.list_assignable_roles(company_id=OSP_COMPANY)
+    assert {role["name"] for role in roles} == {
+        "BPDM Sharing Input Consumer", "BPDM Sharing Output Consumer", "Dataspace Discovery",
+        "Identity Wallet Management", "Semantic Model Management",
     }
 
 
@@ -164,7 +186,7 @@ def test_company_and_subscription_deactivation_preserve_final_state(c2m3):
 def test_delete_without_wallet_and_wallet_removal_step(c2m3):
     own = _create_own()
     own_row = service.technical_users[own["id"]]
-    status_code, body = service.delete_technical_user(id=own["id"], actor_sub=ACTOR)
+    status_code, body = service.delete_technical_user(id=own["id"], company_id=CUSTOMER, actor_sub=ACTOR)
     assert status_code == 204
     assert body is None
     assert own_row["status"] == "DELETED"
@@ -173,10 +195,51 @@ def test_delete_without_wallet_and_wallet_removal_step(c2m3):
     wallet_user = _create_own({"name": "Wallet client", "roles": [{"name": "Identity Wallet Management"}]})
     service.apply_wallet_access(_step_input(technicalUserId=wallet_user["id"], outcome="ACTIVE",
                                              walletAccountRef="wallet-account-2"))
-    status_code, body = service.delete_technical_user(id=wallet_user["id"], actor_sub=ACTOR)
+    status_code, body = service.delete_technical_user(id=wallet_user["id"], company_id=CUSTOMER, actor_sub=ACTOR)
     assert status_code == 202
     assert body["status"] == "PENDING_DELETION"
     deleted = service.delete(_step_input(technicalUserId=wallet_user["id"]))
     assert deleted["result"] == {"technicalUserId": wallet_user["id"], "status": "DELETED"}
     assert service.delete(_step_input(technicalUserId=wallet_user["id"])) == deleted
     assert [event["type"] for event in events.RELAY.log].count("TechnicalUserDeleted") == 2
+
+def test_update_rotate_and_delete_respect_owner_and_co_viewer(c2m3):
+    body = _step_input(customerCompanyId=CUSTOMER, providerCompanyId=PROVIDER,
+        offerSubscriptionId=SUBSCRIPTION, name="Profile", roles=[{"name": "Dataspace Discovery"}])
+    account = service.create_for_subscription(body)["result"]["accounts"][0]["technicalUserId"]
+    own = _create_own()
+
+    with pytest.raises(Problem) as error:
+        service.update_technical_user(id=account, company_id=PROVIDER, body={"name": "x"}, actor_sub=ACTOR)
+    assert (error.value.status, error.value.name) == (403, "not-owner")
+    with pytest.raises(Problem) as error:
+        service.rotate_credentials(id=account, company_id=PROVIDER, actor_sub=ACTOR)
+    assert (error.value.status, error.value.name) == (403, "not-owner")
+    with pytest.raises(Problem) as error:
+        service.rotate_credentials(id=own["id"], company_id=PROVIDER, actor_sub=ACTOR)
+    assert (error.value.status, error.value.name) == (404, "not-found")
+    with pytest.raises(Problem) as error:
+        service.delete_technical_user(id=own["id"], company_id=PROVIDER, actor_sub=ACTOR)
+    assert error.value.status == 404
+
+    assert service.update_technical_user(id=own["id"], company_id=CUSTOMER, body={"name": "New"},
+                                         actor_sub=ACTOR)["name"] == "New"
+    assert service.rotate_credentials(id=own["id"], company_id=CUSTOMER, actor_sub=ACTOR)["secret"]
+    status_code, _ = service.delete_technical_user(id=account, company_id=PROVIDER, actor_sub=ACTOR)
+    assert status_code == 204
+
+
+def test_subscription_account_without_wallet_role_is_active(c2m3):
+    result = service.create_for_subscription(_step_input(customerCompanyId=CUSTOMER, providerCompanyId=PROVIDER,
+        offerSubscriptionId=SUBSCRIPTION, name="Profile", roles=[{"name": "Dataspace Discovery"}]))
+    account = result["result"]["accounts"][0]
+    assert (account["status"], account["walletAccess"]) == ("ACTIVE", "NONE")
+    assert [event["type"] for event in events.RELAY.log] == ["TechnicalUserCreated"]
+
+
+def test_subscription_step_requires_business_keys(c2m3):
+    body = _step_input(customerCompanyId=CUSTOMER, name="Profile", roles=[{"name": "Dataspace Discovery"}])
+    with pytest.raises(Problem) as error:
+        service.create_for_subscription(body)
+    assert (error.value.status, error.value.name) == (400, "validation")
+    assert not service.technical_users

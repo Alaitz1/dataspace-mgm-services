@@ -125,6 +125,10 @@ class KeycloakIAM:
     def _call(self, method: str, path: str, **kwargs):
         response = http.request(method, self.base_url + path,
                                 headers={"Authorization": f"Bearer {self._token()}"}, **kwargs)
+        if response.status_code == 401:
+            self._access_token = None
+            response = http.request(method, self.base_url + path,
+                                    headers={"Authorization": f"Bearer {self._token()}"}, **kwargs)
         if not response.is_success:
             raise IAMError(f"Portal IAM answered {response.status_code} for {method} {path}")
         return response
