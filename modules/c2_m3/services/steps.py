@@ -68,6 +68,13 @@ def _subscription_account(input: dict, data: StepCreateForSubscription, *, party
         accounts.complete_creation(row, created, wallet_requested=wallet_requested,
                                    added_roles=sorted(after - before), operation="create-for-subscription",
                                    actor=actor)
+    else:
+        restored = sorted(set(iam_access.call(iam.roles_for, row["iam_client_id"])) - before)
+        if restored:   # roles that were missing in the Portal IAM and were assigned again by this retry
+            with repository.transaction():
+                accounts.touch(row)
+                audit.record(row, "create-for-subscription", actor)
+                audit.record_role_changes(row, restored, [], "create-for-subscription", actor)
     return {"technicalUserId": row["id"], "subscriptionParty": party, "iamClientId": row["iam_client_id"],
             "status": row["status"], "walletAccess": row["wallet_access"],
             "roles": [{"name": name} for name in role_names]}

@@ -252,6 +252,25 @@ def test_the_memory_iam_follows_disable_rotate_and_delete_like_keycloak(c2m3):
 
 
 # -- the order of effects ------------------------------------------------------------------------------
+def test_roles_restored_by_a_retried_creation_are_audited(c2m3):
+    service.create_for_subscription(_subscription_body())
+    row = repository.find(offer_subscription_id=SUB)[0]
+    iam.get().set_roles(row["iam_client_id"], [])   # lost in the Portal IAM after the account was completed
+    entries_before = len(repository.role_assignment_entries())
+    service.create_for_subscription(_subscription_body())   # the retry of Process Orchestration
+    assert iam.get().roles_for(row["iam_client_id"]) == ["Dataspace Discovery"]
+    added = repository.role_assignment_entries()[entries_before:]
+    assert [(entry["technical_user_id"], entry["role_name"], entry["action"], entry["operation"])
+            for entry in added] == [(row["id"], "Dataspace Discovery", "ADDED", "create-for-subscription")]
+
+
+def test_a_retried_creation_that_changes_nothing_records_nothing(c2m3):
+    service.create_for_subscription(_subscription_body())
+    entries = len(repository.role_assignment_entries())
+    service.create_for_subscription(_subscription_body())
+    assert len(repository.role_assignment_entries()) == entries
+
+
 def test_role_changes_are_audited_even_if_the_metadata_update_fails(c2m3, monkeypatch):
     account = _create(U1)
 
