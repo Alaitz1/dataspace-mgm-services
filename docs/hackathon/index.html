@@ -177,6 +177,27 @@
   }
   @media (max-width: 520px) { .teams { grid-template-columns: 1fr; } .slot { grid-template-columns: 56px 1fr; } .slot.now::after { display: none; } }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+
+  /* live leaderboard panel: always visible on wide screens, also in presenter mode */
+  #lbp { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; z-index: 30; overflow-y: auto;
+    background: var(--panel); border-left: 1px solid var(--line); padding: 14px 14px 18px; font-size: 14px; }
+  #lbp h3 { margin: 0; font-size: 18px; } #lbp h3 span { color: var(--orange); }
+  #lbp .lbmeta { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
+  #lbp .lbhead { display: flex; justify-content: space-between; align-items: baseline; margin: 12px 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; font-size: 11px; font-weight: 700; }
+  #lbp .lbrow { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; margin: 5px 0; transition: border-color .4s; }
+  #lbp .lbrow.top { border-color: var(--orange); }
+  #lbp .lbrank { color: var(--orange); font-weight: 800; font-size: 16px; text-align: center; }
+  #lbp .lbteam b { display: block; font-size: 14px; } #lbp .lbteam small { color: var(--muted); font-size: 11px; }
+  #lbp .lbscore { font-size: 22px; font-weight: 800; text-align: right; line-height: 1; }
+  #lbp .lbscore small { display: block; font-size: 10px; font-weight: 400; color: var(--muted); margin-top: 3px; }
+  #lbp.compact .lbrow { padding: 4px 10px; } #lbp .front .lbscore { font-size: 17px; }
+  #lbp form { display: grid; gap: 6px; margin-top: 8px; } #lbp form[hidden] { display: none; } #lbp input { background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font: inherit; }
+  #lbp .lbfoot { color: var(--muted); font-size: 11px; margin-top: 10px; }
+  @media (min-width: 1300px) { body.lbp-on { padding-right: 360px; } body.lbp-on .hud { right: 380px; } }
+  @media (max-width: 1299px) { #lbp { position: static; width: auto; border-left: 0; border-top: 1px solid var(--line); } }
 </style>
 </head>
 <body>
@@ -286,6 +307,7 @@
   </div>
 </section>
 
+
 <section id="live">
   <div class="wrap">
     <div class="eyebrow">Live from GitHub</div>
@@ -304,6 +326,17 @@
 <footer><div class="wrap">Eclipse Tractus-X Hackathon II · ARENA2036 · Data Space Management Service and UI. Eclipse Tractus-X is a trademark of the Eclipse Foundation.</div></footer>
 <div class="hud" id="hud">← → slides · A auto · Esc exit</div>
 
+<aside id="lbp" aria-label="Live leaderboard">
+  <h3>Leaderboard <span>live</span></h3>
+  <div class="lbmeta" id="lbp-status">starting…</div>
+  <div id="lbp-boards"></div>
+  <form id="lbp-login" hidden>
+    <div class="lbmeta">GitHub token (read-only, public repos). It stays in this browser tab.</div>
+    <input id="lbp-token" type="password" autocomplete="off" placeholder="github_pat_… or gho_…" aria-label="GitHub token">
+    <button type="submit">Start leaderboard</button>
+  </form>
+  <div class="lbfoot">1 point per commit on team/&lt;n&gt; since 10:30 · 5 per merged pull request · refresh every 10 s</div>
+</aside>
 <script>
 const EVENT_DAY = "2026-11-06";
 const DOORS = new Date("2026-11-06T08:30:00+01:00");   // CET
@@ -562,6 +595,196 @@ renderSteps(); renderWork(); renderDay(); renderRoadmap(); tick();
 setInterval(tick, 1000);
 setInterval(() => { renderDay(); renderRoadmap(); }, 60000);
 refreshLive(); setInterval(refreshLive, 300000);
+
+// ---------- live leaderboard panel (same logic as leaderboard.html) ----------
+(() => {
+const CONFIG = {
+  upstream: "eclipse-tractusx",                 // teams fork these repos; pull requests are merged into main here
+  boards: [                                     // first board is the main part and gets ~2/3 of the width
+    { id: "backend", title: "Backend", repo: "dataspace-mgm-services" },
+    { id: "frontend", title: "Frontend", repo: "dataspace-mgm-ui", compact: true },
+  ],
+  excludedOwners: ["tx-arena-events", "Marcel-Bauer"],   // never count: old fork model (team/1..8) and the organiser fork used for scaffold PRs
+  start: "2026-11-06T10:30:00+01:00",           // commits before this do not count
+  refreshSeconds: 10,
+  pointsPerCommit: 1,
+  pointsPerMergedPr: 5,
+  teams: [   // branch team/<number> in any fork = this team
+    { number: 1, name: "Team 1", topic: "Onboarding" },
+    { number: 2, name: "Team 2", topic: "Company and CSP" },
+    { number: 3, name: "Team 3", topic: "Wallet and credentials" },
+    { number: 4, name: "Team 4", topic: "People and access" },
+    { number: 5, name: "Team 5", topic: "Notifications" },
+    { number: 6, name: "Team 6", topic: "Portal UI" },
+  ],
+};
+/* PURE-START: discovery and scoring, no DOM. Tested by test/leaderboard.test.mjs. */
+const TEAM_BRANCH = /^team\/([1-9]\d*)$/;   // exactly team/<n>; team/1-wip, team/01, team/1/x do not count
+function teamNumber(branch) {
+  const m = TEAM_BRANCH.exec(branch || "");
+  return m ? Number(m[1]) : null;
+}
+
+// repo = one `repository` object of the GraphQL answer; cfg = CONFIG.
+// MINIMAL: history(since) counts every commit reachable from team/<n> with a commit date after the start,
+// so commits pulled in from upstream main (other teams' merged PRs, "Sync fork") count too, and a branch
+// pushed to two forks counts twice. Only the first 100 forks, 20 team branches per fork and the latest
+// 100 pull requests are read (no paging). Good enough for 6 teams on one day; if it inflates scores,
+// compare each branch against upstream main (REST compare API, one call per branch).
+function scoreBoard(repo, cfg) {
+  const lower = (s) => String(s).toLowerCase();
+  const excluded = new Set(cfg.excludedOwners.map(lower));
+  const teams = new Map(cfg.teams.map((t) => [t.number,
+    { ...t, commits: 0, merged: 0, open: 0, forks: [], lastMsg: null, lastAt: null }]));
+
+  for (const fork of repo.forks.nodes) {
+    const owner = fork.owner.login;
+    if (excluded.has(lower(owner))) continue;
+    for (const ref of fork.refs.nodes) {   // refPrefix "refs/heads/team/" is stripped: name is "1", not "team/1"
+      const t = teams.get(teamNumber("team/" + ref.name));
+      const c = ref.target;
+      if (!t || !c || !c.history) continue;
+      t.commits += c.history.totalCount;
+      // Forks copy every upstream branch, incl. the old team/1..8 of eclipse-tractusx: list a fork only once it has commits since the start.
+      if (c.history.totalCount > 0) t.forks.push(owner);
+      if (c.history.totalCount > 0 && (!t.lastAt || c.committedDate > t.lastAt)) {
+        t.lastAt = c.committedDate; t.lastMsg = c.messageHeadline;
+      }
+    }
+  }
+
+  for (const pr of repo.pullRequests.nodes) {
+    const owner = pr.headRepositoryOwner && pr.headRepositoryOwner.login;   // null if the fork was deleted
+    if (!owner || lower(owner) === lower(cfg.upstream) || excluded.has(lower(owner))) continue;
+    if (pr.baseRefName !== "main") continue;
+    const t = teams.get(teamNumber(pr.headRefName));
+    if (!t) continue;
+    if (pr.merged) t.merged += 1;
+    else if (pr.state === "OPEN") t.open += 1;   // shown, not scored
+  }
+
+  return [...teams.values()].map((t) => ({ ...t, score: t.commits * cfg.pointsPerCommit + t.merged * cfg.pointsPerMergedPr }));
+}
+
+function rankTeams(teams) {
+  return [...teams].sort((a, b) => b.score - a.score || a.number - b.number);
+}
+/* PURE-END */
+function buildQuery() {
+  const repos = CONFIG.boards.map((b) =>
+    `${b.id}: repository(owner: ${JSON.stringify(CONFIG.upstream)}, name: ${JSON.stringify(b.repo)}) { ...board }`).join("\n  ");
+  return `query($since: GitTimestamp!) {
+  ${repos}
+}
+fragment board on Repository {
+  forks(first: 100) {
+    nodes {
+      owner { login }
+      refs(refPrefix: "refs/heads/team/", first: 20) {
+        nodes { name target { ... on Commit { messageHeadline committedDate history(since: $since) { totalCount } } } }
+      }
+    }
+  }
+  pullRequests(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { number state merged baseRefName headRefName headRepositoryOwner { login } }
+  }
+}`;
+}
+
+function clockTime(d) { return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+
+async function fetchGithub(token) {
+  let res;
+  try {
+    res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { "Authorization": "bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: buildQuery(), variables: { since: new Date(CONFIG.start).toISOString() } }),
+    });
+  } catch (e) {
+    throw new Error("no connection to GitHub (network, proxy or Wi-Fi?)");
+  }
+  if (res.status === 401) throw new Error("token rejected (401)");
+  const json = await res.json().catch(() => ({}));
+  const errors = json.errors || [];
+  const limited = res.headers.get("x-ratelimit-remaining") === "0" || res.status === 429
+    || /rate limit/i.test(json.message || "") || errors.some((e) => e.type === "RATE_LIMITED");
+  if (limited) {
+    const reset = Number(res.headers.get("x-ratelimit-reset"));
+    throw new Error("GitHub rate limit reached" + (reset ? ", resets at " + clockTime(new Date(reset * 1000)) : ""));
+  }
+  if (!res.ok) throw new Error(`GitHub ${res.status}: ${json.message || res.statusText}`);
+  if (errors.length) throw new Error(errors[0].message);
+  return CONFIG.boards.map((b) => {
+    const repo = json.data && json.data[b.id];
+    if (!repo) throw new Error(`repo ${CONFIG.upstream}/${b.repo} not found`);
+    return scoreBoard(repo, CONFIG);
+  });
+}
+async function fetchGithub(token) {
+  let res;
+  try {
+    res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { "Authorization": "bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: buildQuery(), variables: { since: new Date(CONFIG.start).toISOString() } }),
+    });
+  } catch (e) {
+    throw new Error("no connection to GitHub (network, proxy or Wi-Fi?)");
+  }
+  if (res.status === 401) throw new Error("token rejected (401)");
+  const json = await res.json().catch(() => ({}));
+  const errors = json.errors || [];
+  const limited = res.headers.get("x-ratelimit-remaining") === "0" || res.status === 429
+    || /rate limit/i.test(json.message || "") || errors.some((e) => e.type === "RATE_LIMITED");
+  if (limited) {
+    const reset = Number(res.headers.get("x-ratelimit-reset"));
+    throw new Error("GitHub rate limit reached" + (reset ? ", resets at " + clockTime(new Date(reset * 1000)) : ""));
+  }
+  if (!res.ok) throw new Error(`GitHub ${res.status}: ${json.message || res.statusText}`);
+  if (errors.length) throw new Error(errors[0].message);
+  return CONFIG.boards.map((b) => {
+    const repo = json.data && json.data[b.id];
+    if (!repo) throw new Error(`repo ${CONFIG.upstream}/${b.repo} not found`);
+    return scoreBoard(repo, CONFIG);
+  });
+}
+
+const KEY = "lb-token";
+const get = (k) => { try { return sessionStorage.getItem(k) || localStorage.getItem(k); } catch (e) { return null; } };
+const put = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
+const el = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+function board(title, rows, cls) {
+  const ranked = rankTeams(rows);
+  return `<div class="${cls}"><div class="lbhead"><span>${title}</span><span>score</span></div>` + ranked.map((t, i) =>
+    `<div class="lbrow ${i === 0 && t.score > 0 ? "top" : ""}"><div class="lbrank">${i + 1}</div>
+      <div class="lbteam"><b>${esc(t.name)}</b><small>${esc(t.topic)}${t.open ? ` · ${t.open} open PR` : ""}</small></div>
+      <div class="lbscore">${t.score}<small>${t.commits} commits · ${t.merged} merged</small></div></div>`).join("") + "</div>";
+}
+async function tick(token) {
+  try {
+    const [back, front] = await fetchGithub(token);
+    el("lbp-boards").innerHTML = board("Backend · dataspace-mgm-services", back, "back") + board("Frontend · dataspace-mgm-ui", front, "front");
+    el("lbp-status").textContent = "updated " + clockTime(new Date());
+  } catch (e) {
+    el("lbp-status").textContent = e.message;
+    if (/401/.test(e.message)) { try { sessionStorage.removeItem(KEY); } catch (x) {} el("lbp-login").hidden = false; }
+  }
+}
+function start(token) { el("lbp-login").hidden = true; tick(token); setInterval(() => tick(token), CONFIG.refreshSeconds * 1000); }
+document.body.classList.add("lbp-on");
+const fromLink = location.hash.match(/(?:^#|&)token=([^&]+)/);   // read-only token in the link, never sent to a server
+if (fromLink) { put(KEY, decodeURIComponent(fromLink[1])); history.replaceState(null, "", location.pathname + location.search); }
+const saved = get(KEY);
+if (saved) start(saved);
+else {
+  el("lbp-status").textContent = "waiting for token";
+  el("lbp-login").hidden = false;
+  el("lbp-login").addEventListener("submit", (ev) => { ev.preventDefault(); const t = el("lbp-token").value.trim(); if (!t) return; put(KEY, t); start(t); });
+}
+})();
 </script>
+
 </body>
 </html>
