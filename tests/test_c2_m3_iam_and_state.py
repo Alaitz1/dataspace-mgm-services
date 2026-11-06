@@ -120,6 +120,10 @@ class FakeKeycloak:
         self.reject_next_admin_call = False
         self.client_exists = False
         self.delete_status = 204
+        self.uuid = "k1"                 # internal ID of the client in this fake
+        self.user = "u1"                 # its service account user
+        self.roles = "rc"                # the client with the technical user roles
+        self.gone: set[str] = set()      # internal IDs of clients and users that Keycloak no longer knows (404)
 
     def __call__(self, method: str, url: str, **kwargs) -> httpx.Response:
         if url.endswith("/protocol/openid-connect/token"):
@@ -132,24 +136,29 @@ class FakeKeycloak:
         key = (method, path)
         self.calls.append(key)
         self.bodies[key] = kwargs.get("json")
+        segments = path.split("/")
+        if len(segments) > 2 and segments[1] in ("clients", "users") and segments[2] in self.gone:
+            return httpx.Response(404)
         wanted = (kwargs.get("params") or {}).get("clientId")
         if key == ("GET", "/clients"):
             if wanted == "technical_roles_management":
-                return httpx.Response(200, json=[{"id": "rc"}])
-            return httpx.Response(200, json=[{"id": "k1", "clientId": wanted}] if self.client_exists else [])
+                return httpx.Response(200, json=[{"id": self.roles}])
+            return httpx.Response(200, json=[{"id": self.uuid, "clientId": wanted}] if self.client_exists else [])
         if key == ("POST", "/clients"):
             self.client_exists = True
             return httpx.Response(201)
-        if method == "DELETE" and path == "/clients/k1":
+        if method == "DELETE" and path == f"/clients/{self.uuid}":
             return httpx.Response(self.delete_status)
         responses = {
-            ("GET", "/clients/rc/roles"): [{"name": "Dataspace Discovery", "description": "d", "attributes": {}}],
-            ("GET", "/clients/k1/service-account-user"): {"id": "u1"},
-            ("GET", "/users/u1"): {"id": "u1", "attributes": {}},
-            ("GET", "/users/u1/role-mappings/clients/rc"): [],
-            ("GET", "/clients/rc/roles/Dataspace%20Discovery"): {"id": "r1", "name": "Dataspace Discovery"},
-            ("GET", "/clients/k1"): {"id": "k1", "enabled": True},
-            ("GET", "/clients/k1/client-secret"): {"value": "s3cret"},
+            ("GET", f"/clients/{self.roles}/roles"): [
+                {"name": "Dataspace Discovery", "description": "d", "attributes": {}}],
+            ("GET", f"/clients/{self.uuid}/service-account-user"): {"id": self.user},
+            ("GET", f"/users/{self.user}"): {"id": self.user, "attributes": {}},
+            ("GET", f"/users/{self.user}/role-mappings/clients/{self.roles}"): [],
+            ("GET", f"/clients/{self.roles}/roles/Dataspace%20Discovery"): {"id": "r1", "name": "Dataspace Discovery"},
+            ("GET", f"/clients/{self.uuid}"): {"id": self.uuid, "enabled": True},
+            ("GET", f"/clients/{self.uuid}/client-secret"): {"value": "s3cret"},
+            ("POST", f"/clients/{self.uuid}/client-secret"): {"value": "rotated"},
         }
         return httpx.Response(200, json=responses.get(key, {}))
 
@@ -218,3 +227,68 @@ def test_other_iam_failures_are_reported(fake):
     fake.client_exists, fake.delete_status = True, 500
     with pytest.raises(IamError):
         keycloak.KeycloakIAM().delete("sa1")
+
+
+def _recreated(fake) -> None:
+    """The client was deleted and created again outside the module: same client ID, new IDs (client and user)."""
+    fake.gone |= {fake.uuid, fake.user}
+    fake.uuid, fake.user = "k2", "u2"
+
+
+def test_a_stale_client_id_is_forgotten_and_the_call_retried_once(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    assert adapter.secret("sa1") == "s3cret"
+    _recreated(fake)
+    assert adapter.rotate_secret("sa1") == "rotated"
+    assert fake.calls.count(("GET", "/clients")) == 2   # the first lookup and the one after the 404
+    assert ("POST", "/clients/k2/client-secret") in fake.calls
+
+
+def test_a_stale_service_account_is_dropped_with_its_client(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    assert adapter.roles_for("sa1") == []
+    _recreated(fake)
+    assert adapter.roles_for("sa1") == []
+    assert ("GET", "/clients/k2/service-account-user") in fake.calls
+    assert ("GET", "/users/u2/role-mappings/clients/rc") in fake.calls
+
+
+def test_a_client_that_is_gone_for_good_is_reported_not_retried_forever(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    adapter.secret("sa1")
+    fake.gone.add(fake.uuid)   # not recreated: the lookup still names the same, now unknown, ID
+    with pytest.raises(IamError):
+        adapter.secret("sa1")
+    assert fake.calls.count(("GET", "/clients/k1/client-secret")) == 3   # first call, then twice after the 404
+
+
+def test_a_stale_roles_client_is_looked_up_again(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    assert [role["name"] for role in adapter.list_roles()] == ["Dataspace Discovery"]
+    fake.gone.add("rc")
+    fake.roles = "rc2"   # the roles client was recreated under a new internal ID
+    assert [role["name"] for role in adapter.list_roles()] == ["Dataspace Discovery"]
+    assert ("GET", "/clients/rc2/roles") in fake.calls
+
+
+def test_delete_with_a_stale_id_removes_the_recreated_client(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    adapter.secret("sa1")
+    _recreated(fake)
+    adapter.delete("sa1")
+    assert ("DELETE", "/clients/k2") in fake.calls
+
+
+def test_delete_of_a_client_that_vanished_is_not_an_error(fake):
+    fake.client_exists = True
+    adapter = keycloak.KeycloakIAM()
+    adapter.secret("sa1")
+    fake.gone.add(fake.uuid)
+    fake.client_exists = False
+    adapter.delete("sa1")
+    assert not [call for call in fake.calls if call[0] == "DELETE" and call[1] == "/clients/k2"]

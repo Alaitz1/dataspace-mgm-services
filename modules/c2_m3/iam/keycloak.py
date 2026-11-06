@@ -25,9 +25,12 @@
 """Keycloak Admin REST API of the Portal IAM (README 6.6 and 11.1), with the module's service account."""
 from __future__ import annotations
 
+import functools
 import os
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -35,7 +38,30 @@ import httpx
 from portal_common import http, tokens
 from portal_common.problems import Problem
 
-from .port import IamError, UnknownRole
+from .port import IamError, IamNotFound, UnknownRole
+
+
+def _retry_stale(method: Callable[..., Any]) -> Callable[..., Any]:
+    """A cached ID can go stale (the client was removed or recreated outside this module): forget it, retry once."""
+    @functools.wraps(method)
+    def wrapper(self: KeycloakIAM, client_id: str, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, client_id, *args, **kwargs)
+        except IamNotFound:
+            self._forget(client_id)
+            return method(self, client_id, *args, **kwargs)
+    return wrapper
+
+
+def _retry_stale_roles_client(method: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(method)
+    def wrapper(self: KeycloakIAM, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        except IamNotFound:
+            self._forget()
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class KeycloakIAM:
@@ -78,10 +104,21 @@ class KeycloakIAM:
         if response.status_code == 401:
             response = send(True)
         if not response.is_success and response.status_code not in accept:
-            raise IamError(f"Portal IAM answered {response.status_code} for {method} {path}")
+            error = IamNotFound if response.status_code == 404 else IamError
+            raise error(f"Portal IAM answered {response.status_code} for {method} {path}")
         return response
 
     # -- lookups ---------------------------------------------------------------------------
+    def _drop_client(self, client_id: str) -> None:
+        client_uuid = self._client_uuids.pop(client_id, None)
+        if client_uuid:
+            self._service_accounts.pop(client_uuid, None)
+
+    def _forget(self, client_id: str | None = None) -> None:
+        """Drops the cached IDs of a client and of the roles client."""
+        self._roles_client_uuid = None
+        if client_id is not None:
+            self._drop_client(client_id)
     def _find_client(self, client_id: str) -> dict | None:
         found = self._call("GET", "/clients", params={"clientId": client_id}).json()
         if found:
@@ -123,6 +160,7 @@ class KeycloakIAM:
         return [self._call("GET", f"/clients/{client}/roles/{quote(name, safe='')}").json() for name in sorted(names)]
 
     # -- roles -----------------------------------------------------------------------------
+    @_retry_stale_roles_client
     def list_roles(self, lang: str | None = None) -> list[dict]:
         response = self._call("GET", f"/clients/{self._roles_client()}/roles",
                               params={"briefRepresentation": "false", "max": 1000})
@@ -139,12 +177,14 @@ class KeycloakIAM:
         if unknown:
             raise UnknownRole(f"unknown technical user roles {sorted(unknown)}")
 
+    @_retry_stale
     def roles_for(self, client_id: str) -> list[str]:
         client_uuid = self._client_uuid(client_id)
         if client_uuid is None:
             return []
         return sorted(role["name"] for role in self._mapped_roles(self._service_account(client_uuid)))
 
+    @_retry_stale
     def set_roles(self, client_id: str, roles: list[str]) -> tuple[list[str], list[str]]:
         self.ensure_roles(roles)
         user_id = self._service_account(self._require_uuid(client_id))
@@ -187,6 +227,7 @@ class KeycloakIAM:
         if representation.get("enabled") != enabled:
             self._call("PUT", f"/clients/{client_uuid}", json=representation | {"enabled": enabled})
 
+    @_retry_stale
     def create_or_complete(self, client_id: str, *, name: str, description: str | None, company_id: str,
                            bpn: str, roles: list[str], enabled: bool = True) -> dict:
         self.ensure_roles(roles)
@@ -204,11 +245,13 @@ class KeycloakIAM:
         return {"id": client_uuid, "clientId": client_id, "serviceAccountUserId": user_id,
                 "name": name, "description": description, "enabled": enabled}
 
+    @_retry_stale
     def update_client(self, client_id: str, *, name: str, description: str | None) -> None:
         client_uuid = self._require_uuid(client_id)
         representation = self._call("GET", f"/clients/{client_uuid}").json()
         self._call("PUT", f"/clients/{client_uuid}", json=representation | {"name": name, "description": description})
 
+    @_retry_stale
     def set_enabled(self, client_id: str, enabled: bool) -> None:
         client_uuid = self._client_uuid(client_id)
         if client_uuid is not None:
@@ -220,16 +263,23 @@ class KeycloakIAM:
             raise IamError("Portal IAM returned no client secret")
         return value
 
+    @_retry_stale
     def secret(self, client_id: str) -> str:
         return self._secret_value(self._call("GET", f"/clients/{self._require_uuid(client_id)}/client-secret"))
 
+    @_retry_stale
     def rotate_secret(self, client_id: str) -> str:
         return self._secret_value(self._call("POST", f"/clients/{self._require_uuid(client_id)}/client-secret"))
 
     def delete(self, client_id: str) -> None:
-        client_uuid = self._client_uuid(client_id)
-        if client_uuid is None:
+        for _attempt in range(2):   # the second one looks the client up again if the cached ID was stale
+            client_uuid = self._client_uuid(client_id)
+            if client_uuid is None:
+                return
+            try:
+                self._call("DELETE", f"/clients/{client_uuid}")
+            except IamNotFound:
+                self._drop_client(client_id)
+                continue
+            self._drop_client(client_id)
             return
-        self._call("DELETE", f"/clients/{client_uuid}", accept=(404,))
-        self._client_uuids.pop(client_id, None)
-        self._service_accounts.pop(client_uuid, None)

@@ -23,22 +23,44 @@
 from __future__ import annotations
 
 import copy
+import logging
 import threading
-from collections.abc import Iterator
+import zlib
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Protocol
 
+from portal_common import events
+
 from .models import AuditLogRecord, RoleAssignmentLogRecord, TechnicalUserRecord
+
+log = logging.getLogger("portal.c2-m3")
+LOCK_STRIPES = 64
+Publisher = Callable[[str, dict], None]
+
+
+def _publish(event_type: str, data: dict) -> None:
+    events.publish("c2-m3", event_type, data)
 
 
 class TechnicalUserRepository(Protocol):
-    """Persistence contract of C2-M3: rows are values, so change a row and then `save` it."""
+    """Persistence contract of C2-M3: rows are values, so change a row and then `save` it.
+
+    `locked(key)` serializes the work on one key (never nest two different keys). `transaction()` makes rows, logs
+    and events (`add_event`) one unit: the events are published only after the outermost transaction committed,
+    and a failed transaction drops them (README 4: outbox)."""
 
     def reset(self) -> None: ...
 
     def locked(self, key: str) -> AbstractContextManager[None]: ...
 
     def transaction(self) -> AbstractContextManager[None]: ...
+
+    def add_event(self, event_type: str, data: dict) -> None: ...
+
+    def flush_outbox(self) -> None: ...
+
+    def unsent_events(self) -> list[tuple[str, dict]]: ...
 
     def next_client_id(self, prefix: str) -> str: ...
 
@@ -67,8 +89,13 @@ class TechnicalUserRepository(Protocol):
 class InMemoryTechnicalUserRepository:
     """Hackathon implementation; it hands out copies so that a missing `save` shows up in tests."""
 
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
+    def __init__(self, publisher: Publisher = _publish) -> None:
+        self._lock = threading.RLock()   # guards the data; never held while a caller does slow work
+        self._key_locks = [threading.RLock() for _ in range(LOCK_STRIPES)]
+        self._publisher = publisher
+        self._depth = 0
+        self._pending: list[tuple[str, dict]] = []   # events of the open transaction
+        self._outbox: list[tuple[str, dict]] = []    # committed events that are not published yet
         self._users: dict[str, TechnicalUserRecord] = {}
         self._audit: list[AuditLogRecord] = []
         self._role_log: list[RoleAssignmentLogRecord] = []
@@ -79,23 +106,60 @@ class InMemoryTechnicalUserRepository:
             self._users.clear()
             self._audit.clear()
             self._role_log.clear()
+            self._pending.clear()
+            self._outbox.clear()
             self._client_number = 0
 
     @contextmanager
     def locked(self, key: str) -> Iterator[None]:
-        with self._lock:
+        with self._key_locks[zlib.crc32(key.encode()) % LOCK_STRIPES]:
             yield
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
         with self._lock:
+            self._depth += 1
             users, audit, role_log = copy.deepcopy(self._users), list(self._audit), list(self._role_log)
+            pending = len(self._pending)
             try:
                 yield
             except BaseException:
                 self._users = users
                 self._audit[:], self._role_log[:] = audit, role_log
+                del self._pending[pending:]
                 raise
+            finally:
+                self._depth -= 1
+            outermost = self._depth == 0
+            if outermost:
+                self._outbox.extend(self._pending)
+                self._pending.clear()
+        if outermost:
+            self.flush_outbox()
+
+    def add_event(self, event_type: str, data: dict) -> None:
+        with self._lock:
+            if self._depth == 0:
+                raise RuntimeError("an event is added inside the transaction of its change")
+            self._pending.append((event_type, copy.deepcopy(data)))
+
+    def flush_outbox(self) -> None:
+        """Publishes the committed events in order; an event that fails for a temporary reason stays for the next try."""
+        with self._lock:
+            while self._outbox:
+                event_type, data = self._outbox[0]
+                try:
+                    self._publisher(event_type, data)
+                except ValueError:   # an invalid event never gets better: report it and go on
+                    log.exception("event %s is invalid and was dropped", event_type)
+                except Exception:  # noqa: BLE001 - the change is committed, the publisher is retried later
+                    log.exception("event %s stays in the outbox", event_type)
+                    return
+                self._outbox.pop(0)
+
+    def unsent_events(self) -> list[tuple[str, dict]]:
+        with self._lock:
+            return list(self._outbox)
 
     def next_client_id(self, prefix: str) -> str:
         with self._lock:

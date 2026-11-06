@@ -22,18 +22,17 @@
 #  SPDX-License-Identifier: Apache-2.0 AND CC0-1.0
 #  Assisted-By: GitHub Copilot (Claude Sonnet 5.5)
 #################################################################################
-"""Audit log, role assignment log (README 6.8) and events (README 10); no secrets, no names."""
+"""Audit log, role assignment log (README 6.8) and events (README 10); no secrets, no names.
+
+The events go to the repository outbox: call them inside the transaction of the change they report."""
 from __future__ import annotations
 
 import datetime as dt
 import uuid
 from dataclasses import dataclass
 
-from portal_common import events
-
 from modules.c2_m3.models import ActorType, TechnicalUserRecord
 from modules.c2_m3.repository import repository
-from .config import MODULE
 
 
 def now() -> str:
@@ -83,24 +82,24 @@ def record_role_changes(row: TechnicalUserRecord, added: list[str], removed: lis
 
 
 def created(row: TechnicalUserRecord) -> None:
-    events.publish(MODULE, "TechnicalUserCreated", {
+    repository.add_event("TechnicalUserCreated", {
         "technicalUserId": row["id"], "companyId": row["company_id"], "origin": row["origin"],
         "offerSubscriptionId": row["offer_subscription_id"], "subscriptionParty": row["subscription_party"],
         "coViewerCompanyId": row["co_viewer_company_id"], "iamClientId": row["iam_client_id"]})
 
 
 def wallet_access_requested(row: TechnicalUserRecord) -> None:
-    events.publish(MODULE, "WalletAccessRequested", {
+    repository.add_event("WalletAccessRequested", {
         "technicalUserId": row["id"], "companyId": row["company_id"],
         "offerSubscriptionId": row["offer_subscription_id"]})
 
 
 def wallet_access_removal_requested(row: TechnicalUserRecord) -> None:
-    events.publish(MODULE, "WalletAccessRemovalRequested", {
+    repository.add_event("WalletAccessRemovalRequested", {
         "technicalUserId": row["id"], "companyId": row["company_id"], "walletAccountRef": row["wallet_account_ref"]})
 
 
 def deleted(row: TechnicalUserRecord) -> None:
-    events.publish(MODULE, "TechnicalUserDeleted", {
+    repository.add_event("TechnicalUserDeleted", {
         "technicalUserId": row["id"], "companyId": row["company_id"],
         "coViewerCompanyId": row["co_viewer_company_id"], "iamClientId": row["iam_client_id"]})

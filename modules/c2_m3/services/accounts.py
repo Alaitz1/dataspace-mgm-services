@@ -84,7 +84,7 @@ def touch(row: TechnicalUserRecord) -> None:
 
 def complete_creation(row: TechnicalUserRecord, created: dict, *, wallet_requested: bool,
                       added_roles: list[str], operation: str, actor: Actor) -> None:
-    """Stores the IAM IDs and the status, writes the logs in one transaction, then reports the events."""
+    """Stores the IAM IDs and the status; rows, logs and events are one transaction (README 6.8)."""
     row["iam_client_uuid"] = created["id"]
     row["iam_service_account_user_id"] = created.get("serviceAccountUserId")
     state.after_creation(row, wallet_requested=wallet_requested)
@@ -92,9 +92,9 @@ def complete_creation(row: TechnicalUserRecord, created: dict, *, wallet_request
         touch(row)
         audit.record(row, operation, actor)
         audit.record_role_changes(row, added_roles, [], operation, actor)
-    audit.created(row)
-    if wallet_requested:
-        audit.wallet_access_requested(row)
+        audit.created(row)
+        if wallet_requested:
+            audit.wallet_access_requested(row)
 
 
 def delete_account(row: TechnicalUserRecord, *, operation: str, actor: Actor) -> None:
@@ -106,4 +106,4 @@ def delete_account(row: TechnicalUserRecord, *, operation: str, actor: Actor) ->
         touch(row)
         audit.record(row, operation, actor)
         audit.record_role_changes(row, [], roles, operation, actor)
-    audit.deleted(row)
+        audit.deleted(row)

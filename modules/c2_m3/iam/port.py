@@ -32,6 +32,10 @@ class IamError(RuntimeError):
     """The Portal IAM did not answer as expected (public error `iam-error`, 502)."""
 
 
+class IamNotFound(IamError):
+    """The Portal IAM answered 404 for an object the adapter knew (a cached ID may be stale)."""
+
+
 class UnknownRole(ValueError):
     """A role is not on the client `TECHNICAL_ROLES_CLIENT` (public error `role-not-assignable`, 400)."""
 

@@ -217,7 +217,8 @@ def test_delete_without_wallet_and_wallet_removal_step(c2m3):
     assert status_code == 202
     assert body["status"] == "PENDING_DELETION"
     deleted = service.delete(_step_input(technicalUserId=wallet_user["id"]))
-    assert deleted["result"] == {"technicalUserId": wallet_user["id"], "status": "DELETED"}
+    assert deleted["result"] == {"technicalUserId": wallet_user["id"], "status": "DELETED", "walletAccess": "NONE",
+                                 "walletAccountRef": None}
     assert service.delete(_step_input(technicalUserId=wallet_user["id"])) == deleted
     assert _event_types().count("TechnicalUserDeleted") == 2
 

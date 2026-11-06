@@ -120,7 +120,7 @@ def delete_technical_user(*, id: str, company_id: str, actor_sub: str) -> tuple[
             with repository.transaction():
                 accounts.touch(row)
                 audit.record(row, "deleteTechnicalUser", actor)
-            audit.wallet_access_removal_requested(row)
+                audit.wallet_access_removal_requested(row)
             return 202, projections.details(row, viewer)
         accounts.delete_account(row, operation="deleteTechnicalUser", actor=actor)
         return 204, None

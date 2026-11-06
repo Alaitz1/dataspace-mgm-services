@@ -116,7 +116,7 @@ def delete(input: dict) -> dict:
         if row["status"] != Status.DELETED:
             state.require_removal_pending(row)
             accounts.delete_account(row, operation="delete", actor=Actor.process(input))
-        return standin.step_reply(input, {"technicalUserId": row["id"], "status": row["status"]})
+        return standin.step_reply(input, _wallet_result(row))
 
 
 def _set_client_enabled(row: TechnicalUserRecord, enabled: bool) -> None:
