@@ -1,0 +1,376 @@
+<!doctype html>
+<!--
+  NOTICE
+
+  This work is licensed under the CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/legalcode).
+
+  - SPDX-License-Identifier: CC-BY-4.0
+  - SPDX-FileCopyrightText: 2026 Contributors to the Eclipse Foundation
+  - Source URL: https://github.com/eclipse-tractusx/dataspace-mgm-services/blob/main/docs/hackathon/leaderboard.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hackathon Leaderboard</title>
+<!--
+  Live leaderboard for the Tractus-X Hackathon II (06.11.2026).
+  Two boards: Backend (eclipse-tractusx/dataspace-mgm-services) and Frontend (eclipse-tractusx/dataspace-mgm-ui).
+  Teams are found automatically: every fork of the Tractus-X repo with a branch team/<n> counts for Team n.
+  One GitHub GraphQL call per refresh covers both repos (cost 2 points, 240 points/hour at 30 s).
+  No build step, no server: open this file in a browser. Demo mode without GitHub: index.html#demo.
+-->
+<style>
+  :root {
+    --bg: #ffffff; --ink: #1f1c2b; --muted: #5c5a66; --line: #d9d6e0;
+    --accent: #5236AB; --accent-soft: #f3f0fa; --up: #1a7f37; --down: #a33a00; --red: #e31937;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16141d; --ink: #f2f0f7; --muted: #a9a6b4; --line: #3a3647; --accent: #a28ff0; --accent-soft: #241f36; --up: #4ac26b; --down: #ff8a4c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: "Source Sans Pro", "Source Sans 3", -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+           padding: 20px 40px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 34px; }
+  h1 span { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 18px; }
+  .meta b { color: var(--ink); }
+  .status.err { color: var(--down); font-weight: 700; }
+  main { padding: 16px 40px 40px; }
+  .boards { display: grid; grid-template-columns: 2fr 1fr; gap: 32px; align-items: start; }
+  .panel h2 { margin: 0 0 12px; font-size: 26px; }
+  .panel h2 small { font-size: 15px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+  .board { position: relative; }
+  .row { position: absolute; left: 0; right: 0; height: 84px; display: grid;
+         grid-template-columns: 64px 1.3fr 2fr 120px 170px; align-items: center; gap: 16px;
+         padding: 0 20px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg);
+         transition: top .8s ease; }
+  .row.first { border-color: var(--accent); background: var(--accent-soft); }
+  .rank { font-size: 36px; font-weight: 700; color: var(--accent); text-align: center; }
+  .team { font-size: 26px; font-weight: 700; line-height: 1.1; min-width: 0; }
+  .team small { display: block; font-size: 15px; font-weight: 400; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .move { font-size: 15px; font-weight: 700; margin-left: 6px; }
+  .move.up { color: var(--up); } .move.down { color: var(--down); }
+  .progress { min-width: 0; }
+  .bar { height: 14px; background: var(--accent-soft); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .8s ease; }
+  .last { font-size: 15px; color: var(--muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .prs { font-size: 16px; text-align: center; color: var(--muted); }
+  .prs.open { color: var(--ink); font-weight: 700; }
+  .prs .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; background: var(--line); }
+  .prs.open .dot { background: #d4a72c; }
+  .score { font-size: 40px; font-weight: 700; text-align: right; }
+  .score small { display: block; white-space: nowrap; font-size: 14px; font-weight: 400; color: var(--muted); }
+  /* Frontend board: the smaller one */
+  .panel.compact .row { height: 68px; grid-template-columns: 40px 1fr 92px 96px; gap: 10px; padding: 0 12px; }
+  .panel.compact .progress { display: none; }
+  .panel.compact .rank { font-size: 26px; }
+  .panel.compact .team { font-size: 20px; }
+  .panel.compact .team small { font-size: 13px; }
+  .panel.compact .prs { font-size: 14px; }
+  .panel.compact .score { font-size: 30px; }
+  .panel.compact .score small { font-size: 12px; }
+  .rules { margin-top: 18px; color: var(--muted); font-size: 16px; }
+  .flash { animation: flash 1.2s ease; }
+  @keyframes flash { 0% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+  [hidden] { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { .row, .bar i { transition: none; } .flash { animation: none; } }
+  form { width: 100%; max-width: 560px; margin: 60px auto; display: grid; gap: 12px; font-size: 18px; }
+  form > * { min-width: 0; overflow-wrap: anywhere; }
+  input, button { font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--ink); }
+  button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+  button:hover { filter: brightness(1.12); }
+  button.secondary { background: transparent; color: var(--accent); }
+  @media (max-width: 1300px) { .boards { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .row, .panel.compact .row { grid-template-columns: 40px 1fr 70px; height: 68px; gap: 10px; padding: 0 12px; }
+    .row .progress, .row .prs { display: none; }
+    h1 { font-size: 24px; }
+    .rank, .panel.compact .rank { font-size: 26px; } .team, .panel.compact .team { font-size: 20px; } .score, .panel.compact .score { font-size: 28px; }
+    .score small { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tractus-X Hackathon II <span>Leaderboard</span></h1>
+  <div class="meta"><span id="clock"></span> · <span id="status" class="status">starting…</span></div>
+</header>
+<main>
+  <form id="login" hidden>
+    <p>GitHub token: a fine-grained token with "Public repositories (read-only)" or a classic token without scopes (it reads the public eclipse-tractusx repos and their forks). It stays in this browser tab only.</p>
+    <input id="token" type="password" autocomplete="off" placeholder="github_pat_…" aria-label="GitHub token">
+    <button type="submit">Start leaderboard</button>
+    <button type="button" id="demoBtn" class="secondary">No repo yet? Show demo data</button>
+  </form>
+  <div id="boards" class="boards" aria-live="polite"></div>
+  <p id="rules" class="rules"></p>
+</main>
+<script>
+// ---------------------------------------------------------------------------
+// CONFIG: adjust before the event. Source: Beschlussstand Hackathon 06.11., sections 2-4.
+// ---------------------------------------------------------------------------
+const CONFIG = {
+  upstream: "eclipse-tractusx",                 // teams fork these repos; pull requests are merged into main here
+  boards: [                                     // first board is the main part and gets ~2/3 of the width
+    { id: "backend", title: "Backend", repo: "dataspace-mgm-services" },
+    { id: "frontend", title: "Frontend", repo: "dataspace-mgm-ui", compact: true },
+  ],
+  excludedOwners: ["tx-arena-events", "Marcel-Bauer"],   // never count: old fork model (team/1..8) and the organiser fork used for scaffold PRs
+  start: "2026-11-06T10:30:00+01:00",           // commits before this do not count
+  refreshSeconds: 10,
+  pointsPerCommit: 1,
+  pointsPerMergedPr: 5,
+  teams: [   // branch team/<number> in any fork = this team
+    { number: 1, name: "Team 1", topic: "Onboarding" },
+    { number: 2, name: "Team 2", topic: "Company and CSP" },
+    { number: 3, name: "Team 3", topic: "Wallet and credentials" },
+    { number: 4, name: "Team 4", topic: "People and access" },
+    { number: 5, name: "Team 5", topic: "Notifications" },
+    { number: 6, name: "Team 6", topic: "Portal UI" },
+  ],
+};
+
+/* PURE-START: discovery and scoring, no DOM. Tested by test/leaderboard.test.mjs. */
+const TEAM_BRANCH = /^team\/([1-9]\d*)$/;   // exactly team/<n>; team/1-wip, team/01, team/1/x do not count
+function teamNumber(branch) {
+  const m = TEAM_BRANCH.exec(branch || "");
+  return m ? Number(m[1]) : null;
+}
+
+// repo = one `repository` object of the GraphQL answer; cfg = CONFIG.
+// MINIMAL: history(since) counts every commit reachable from team/<n> with a commit date after the start,
+// so commits pulled in from upstream main (other teams' merged PRs, "Sync fork") count too, and a branch
+// pushed to two forks counts twice. Only the first 100 forks, 20 team branches per fork and the latest
+// 100 pull requests are read (no paging). Good enough for 6 teams on one day; if it inflates scores,
+// compare each branch against upstream main (REST compare API, one call per branch).
+function scoreBoard(repo, cfg) {
+  const lower = (s) => String(s).toLowerCase();
+  const excluded = new Set(cfg.excludedOwners.map(lower));
+  const teams = new Map(cfg.teams.map((t) => [t.number,
+    { ...t, commits: 0, merged: 0, open: 0, forks: [], lastMsg: null, lastAt: null }]));
+
+  for (const fork of repo.forks.nodes) {
+    const owner = fork.owner.login;
+    if (excluded.has(lower(owner))) continue;
+    for (const ref of fork.refs.nodes) {   // refPrefix "refs/heads/team/" is stripped: name is "1", not "team/1"
+      const t = teams.get(teamNumber("team/" + ref.name));
+      const c = ref.target;
+      if (!t || !c || !c.history) continue;
+      t.commits += c.history.totalCount;
+      // Forks copy every upstream branch, incl. the old team/1..8 of eclipse-tractusx: list a fork only once it has commits since the start.
+      if (c.history.totalCount > 0) t.forks.push(owner);
+      if (c.history.totalCount > 0 && (!t.lastAt || c.committedDate > t.lastAt)) {
+        t.lastAt = c.committedDate; t.lastMsg = c.messageHeadline;
+      }
+    }
+  }
+
+  for (const pr of repo.pullRequests.nodes) {
+    const owner = pr.headRepositoryOwner && pr.headRepositoryOwner.login;   // null if the fork was deleted
+    if (!owner || lower(owner) === lower(cfg.upstream) || excluded.has(lower(owner))) continue;
+    if (pr.baseRefName !== "main") continue;
+    const t = teams.get(teamNumber(pr.headRefName));
+    if (!t) continue;
+    if (pr.merged) t.merged += 1;
+    else if (pr.state === "OPEN") t.open += 1;   // shown, not scored
+  }
+
+  return [...teams.values()].map((t) => ({ ...t, score: t.commits * cfg.pointsPerCommit + t.merged * cfg.pointsPerMergedPr }));
+}
+
+function rankTeams(teams) {
+  return [...teams].sort((a, b) => b.score - a.score || a.number - b.number);
+}
+/* PURE-END */
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+let DEMO = params.has("demo") || location.hash === "#demo";   // macOS "open" drops ?query on file URLs, #demo survives
+const previousRank = {};
+const previousScore = {};
+let lastOk = null;
+
+function store(key, value) {   // sessionStorage can throw (private mode, blocked storage)
+  try { value === undefined ? sessionStorage.removeItem(key) : sessionStorage.setItem(key, value); } catch (e) {}
+}
+function recall(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+
+// Verified against the real API on 05.11.2026 (cost 2 points for both repos).
+function buildQuery() {
+  const repos = CONFIG.boards.map((b) =>
+    `${b.id}: repository(owner: ${JSON.stringify(CONFIG.upstream)}, name: ${JSON.stringify(b.repo)}) { ...board }`).join("\n  ");
+  return `query($since: GitTimestamp!) {
+  ${repos}
+}
+fragment board on Repository {
+  forks(first: 100) {
+    nodes {
+      owner { login }
+      refs(refPrefix: "refs/heads/team/", first: 20) {
+        nodes { name target { ... on Commit { messageHeadline committedDate history(since: $since) { totalCount } } } }
+      }
+    }
+  }
+  pullRequests(first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { number state merged baseRefName headRefName headRepositoryOwner { login } }
+  }
+}`;
+}
+
+function clockTime(d) { return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+
+async function fetchGithub(token) {
+  let res;
+  try {
+    res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: { "Authorization": "bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: buildQuery(), variables: { since: new Date(CONFIG.start).toISOString() } }),
+    });
+  } catch (e) {
+    throw new Error("no connection to GitHub (network, proxy or Wi-Fi?)");
+  }
+  if (res.status === 401) throw new Error("token rejected (401)");
+  const json = await res.json().catch(() => ({}));
+  const errors = json.errors || [];
+  const limited = res.headers.get("x-ratelimit-remaining") === "0" || res.status === 429
+    || /rate limit/i.test(json.message || "") || errors.some((e) => e.type === "RATE_LIMITED");
+  if (limited) {
+    const reset = Number(res.headers.get("x-ratelimit-reset"));
+    throw new Error("GitHub rate limit reached" + (reset ? ", resets at " + clockTime(new Date(reset * 1000)) : ""));
+  }
+  if (!res.ok) throw new Error(`GitHub ${res.status}: ${json.message || res.statusText}`);
+  if (errors.length) throw new Error(errors[0].message);
+  return CONFIG.boards.map((b) => {
+    const repo = json.data && json.data[b.id];
+    if (!repo) throw new Error(`repo ${CONFIG.upstream}/${b.repo} not found`);
+    return scoreBoard(repo, CONFIG);
+  });
+}
+
+// MINIMAL: demo data is random growth, good enough to rehearse the screen share; real data needs a token.
+const demoState = CONFIG.boards.map((b, bi) => CONFIG.teams.map(() =>
+  ({ commits: Math.floor(Math.random() * (bi ? 6 : 12)), merged: Math.floor(Math.random() * 2), open: 0 })));
+function fetchDemo() {
+  const msgs = ["feat: add list endpoint", "test: contract test green", "fix: validation", "feat: process step", "docs: README"];
+  return CONFIG.boards.map((b, bi) => CONFIG.teams.map((t, i) => {
+    const s = demoState[bi][i];
+    if (Math.random() < (bi ? 0.3 : 0.6)) s.commits += Math.floor(Math.random() * 4);
+    if (Math.random() < 0.05) s.merged += 1;
+    s.open = Math.random() < 0.15 ? 1 : 0;
+    return { ...t, ...s, score: s.commits * CONFIG.pointsPerCommit + s.merged * CONFIG.pointsPerMergedPr,
+             forks: ["demo-user-" + t.number], lastMsg: msgs[(s.commits + i) % msgs.length], lastAt: new Date().toISOString() };
+  }));
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function buildBoards() {
+  $("boards").innerHTML = CONFIG.boards.map((b) => `
+    <section class="panel${b.compact ? " compact" : ""}">
+      <h2>${esc(b.title)}<small>${esc(CONFIG.upstream + "/" + b.repo)}</small></h2>
+      <div id="board-${esc(b.id)}" class="board"></div>
+    </section>`).join("");
+}
+
+function lastLine(t) {
+  if (!t.forks.length) return `no commits on team/${t.number} since the start yet`;
+  const where = "fork: " + t.forks.join(", ");
+  return t.lastAt ? `${t.lastMsg} · ${ago(t.lastAt)} · ${where}` : `no commits since start · ${where}`;
+}
+
+function renderBoard(b, teams) {
+  const rowH = b.compact ? 76 : 96;
+  const ranked = rankTeams(teams);
+  const max = Math.max(1, ...ranked.map((t) => t.score));
+  const board = $("board-" + b.id);
+  board.style.height = ranked.length * rowH + "px";
+  ranked.forEach((t, rank) => {
+    const key = b.id + ":" + t.number;
+    let row = board.querySelector(`[data-team="${t.number}"]`);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "row"; row.dataset.team = t.number; row.style.top = rank * rowH + "px";
+      board.appendChild(row);
+    }
+    const before = previousRank[key];
+    const delta = before === undefined ? 0 : before - rank;
+    const move = delta > 0 ? `<span class="move up">▲${delta}</span>` : delta < 0 ? `<span class="move down">▼${-delta}</span>` : "";
+    row.innerHTML = `
+      <div class="rank">${rank + 1}</div>
+      <div class="team">${esc(t.name)}${move}<small>${esc(t.topic)}</small></div>
+      <div class="progress"><div class="bar"><i style="width:${(100 * t.score / max).toFixed(1)}%"></i></div>
+        <div class="last">${esc(lastLine(t))}</div></div>
+      <div class="prs${t.open ? " open" : ""}"><span class="dot"></span>${t.open ? `${t.open} open PR` : "no open PR"}</div>
+      <div class="score">${t.score}<small>${t.commits} commits · ${t.merged} merged</small></div>`;
+    row.title = lastLine(t);
+    row.classList.toggle("first", rank === 0 && t.score > 0);
+    row.style.top = rank * rowH + "px";
+    if (previousScore[key] !== undefined && previousScore[key] !== t.score) {
+      row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash");
+    }
+    previousRank[key] = rank; previousScore[key] = t.score;
+  });
+}
+
+function render(perBoard) {
+  CONFIG.boards.forEach((b, i) => renderBoard(b, perBoard[i]));
+  const since = new Date(CONFIG.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("rules").textContent = `Score per board = ${CONFIG.pointsPerCommit} point per commit on branch team/<n> since ${since}`
+    + ` + ${CONFIG.pointsPerMergedPr} points per pull request from team/<n> merged into main of the Tractus-X repo.`
+    + ` Open pull requests are shown but do not count. Teams are found automatically: any fork of the Tractus-X repo with a branch team/<n> counts for Team n.`;
+}
+
+async function tick(token) {
+  try {
+    render(DEMO ? fetchDemo() : await fetchGithub(token));
+    lastOk = new Date();
+    $("status").textContent = (DEMO ? "demo data · " : "") + "last updated " + clockTime(lastOk);
+    $("status").classList.remove("err");
+  } catch (e) {
+    $("status").textContent = "update failed: " + e.message
+      + (lastOk ? " · last updated " + clockTime(lastOk) : "") + " (retrying)";
+    $("status").classList.add("err");
+    if (/401/.test(e.message)) { store("lb-token"); location.reload(); }
+  }
+}
+
+function start(token) {
+  $("login").hidden = true;
+  buildBoards();
+  tick(token);
+  setInterval(() => tick(token), (DEMO ? 3 : CONFIG.refreshSeconds) * 1000);
+}
+
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }, 1000);
+
+// A link can carry a read-only token after "#token=" (never sent to a server): keep it in this tab, drop it from the address bar.
+const fromLink = location.hash.match(/(?:^#|&)token=([^&]+)/);
+if (fromLink) { store("lb-token", decodeURIComponent(fromLink[1])); history.replaceState(null, "", location.pathname + location.search); }
+const saved = recall("lb-token");
+if (DEMO) start(null);
+else if (saved) start(saved);
+else {
+  $("status").textContent = "waiting for token";
+  $("login").hidden = false;
+  $("demoBtn").addEventListener("click", () => { DEMO = true; start(null); });
+  $("login").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const token = $("token").value.trim();
+    if (!token) return;
+    store("lb-token", token);
+    start(token);
+  });
+}
+</script>
+</body>
+</html>
