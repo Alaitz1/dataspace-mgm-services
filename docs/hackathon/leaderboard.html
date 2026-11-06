@@ -353,6 +353,9 @@ function start(token) {
 
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }, 1000);
 
+// A link can carry a read-only token after "#token=" (never sent to a server): keep it in this tab, drop it from the address bar.
+const fromLink = location.hash.match(/(?:^#|&)token=([^&]+)/);
+if (fromLink) { store("lb-token", decodeURIComponent(fromLink[1])); history.replaceState(null, "", location.pathname + location.search); }
 const saved = recall("lb-token");
 if (DEMO) start(null);
 else if (saved) start(saved);

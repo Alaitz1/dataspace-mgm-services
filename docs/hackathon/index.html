@@ -774,6 +774,8 @@ async function tick(token) {
 }
 function start(token) { el("lbp-login").hidden = true; tick(token); setInterval(() => tick(token), CONFIG.refreshSeconds * 1000); }
 document.body.classList.add("lbp-on");
+const fromLink = location.hash.match(/(?:^#|&)token=([^&]+)/);   // read-only token in the link, never sent to a server
+if (fromLink) { put(KEY, decodeURIComponent(fromLink[1])); history.replaceState(null, "", location.pathname + location.search); }
 const saved = get(KEY);
 if (saved) start(saved);
 else {
