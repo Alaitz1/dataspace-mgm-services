@@ -33,6 +33,7 @@ from urllib.parse import quote
 import httpx
 
 from portal_common import http, tokens
+from portal_common.problems import Problem
 
 from .port import IamError, UnknownRole
 
@@ -48,11 +49,17 @@ class KeycloakIAM:
 
     # -- transport -------------------------------------------------------------------------
     def _access_token(self, *, fresh: bool = False) -> str:
+        secret = os.environ.get("C2_M3_CLIENT_SECRET")
+        if not secret:   # README 4: without C2_M3_CLIENT_*, the shared token of the service account `svc-c2-m3`
+            if fresh:
+                tokens.reset()
+            try:
+                return tokens.service_token("c2-m3")
+            except Problem as exc:
+                raise IamError(f"Portal IAM token endpoint failed: {exc.detail}") from exc
         with self._lock:
             if not fresh and self._token and self._token[1] > time.time() + 30:
                 return self._token[0]
-        secret = (os.environ.get("C2_M3_CLIENT_SECRET") or os.environ.get("SERVICE_CLIENT_SECRET")
-                  or tokens.DEFAULT_SERVICE_SECRET)   # the default is the test installation's secret
         response = http.request("POST", tokens.token_endpoint(), data={
             "grant_type": "client_credentials",
             "client_id": os.environ.get("C2_M3_CLIENT_ID", "svc-c2-m3"), "client_secret": secret})

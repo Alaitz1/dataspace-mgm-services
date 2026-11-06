@@ -32,18 +32,19 @@ from portal_common.problems import Problem
 from modules.c2_m3 import gateways
 from modules.c2_m3.models import Origin, TechnicalUserRecord, Viewer
 from modules.c2_m3.repository import repository
+from modules.c2_m3.schemas import SubscriptionCredentialsRequest, TechnicalUserCreate, TechnicalUserUpdate
 from . import accounts, audit, config, iam_access, projections, roles, state, validation
 from .audit import Actor
 from .config import MODULE
 
 
 def create_technical_user(*, company_id: str, body: dict, actor_sub: str) -> dict:
-    role_names = validation.validate_create(body, max_name=80)
+    data = validation.parse(TechnicalUserCreate, body)
+    role_names = data.role_names
     company = gateways.company_ready(company_id)
     roles.require_assignable(company_id, role_names)
     wallet_requested, assigned = roles.split(role_names)
-    row = accounts.new_row(company_id=company_id, name=body["name"], description=body.get("description"),
-                           origin=Origin.OWN)
+    row = accounts.new_row(company_id=company_id, name=data.name, description=data.description, origin=Origin.OWN)
     iam = iam_access.iam()
     try:
         created = iam_access.call(iam.create_or_complete, row["iam_client_id"], name=row["name"],
@@ -60,10 +61,10 @@ def create_technical_user(*, company_id: str, body: dict, actor_sub: str) -> dic
     return projections.details(row, Viewer.OWNER) | {"credentials": projections.credentials(row, secret)}
 
 
-def _update_roles(row: TechnicalUserRecord, body: dict) -> tuple[list[str], list[str]]:
-    if "roles" not in body:
+def _update_roles(row: TechnicalUserRecord, data: TechnicalUserUpdate) -> tuple[list[str], list[str]]:
+    if data.roles is None:
         return [], []
-    role_names = validation.role_names(body["roles"])
+    role_names = data.role_names
     if row["origin"] == Origin.OWN:
         roles.require_assignable(row["company_id"], role_names)
     else:
@@ -76,8 +77,9 @@ def _update_roles(row: TechnicalUserRecord, body: dict) -> tuple[list[str], list
     return iam_access.call(iam_access.iam().set_roles, row["iam_client_id"], assigned)
 
 
-def _update_metadata(row: TechnicalUserRecord, body: dict) -> bool:
-    name, description = body.get("name", row["name"]), body.get("description", row["description"])
+def _update_metadata(row: TechnicalUserRecord, data: TechnicalUserUpdate) -> bool:
+    name = data.name if "name" in data.model_fields_set else row["name"]
+    description = data.description if "description" in data.model_fields_set else row["description"]
     if (name, description) == (row["name"], row["description"]):
         return False
     iam_access.call(iam_access.iam().update_client, row["iam_client_id"], name=name, description=description)
@@ -90,10 +92,10 @@ def update_technical_user(*, id: str, company_id: str, body: dict, actor_sub: st
     with repository.locked(f"technical-user:{id}"):
         row = accounts.find(id)
         accounts.require_owner(row, company_id)
-        validation.validate_update(body)
+        data = validation.parse(TechnicalUserUpdate, body)
         state.require_changeable(row)
-        added, removed = _update_roles(row, body)
-        metadata_changed = _update_metadata(row, body)
+        added, removed = _update_roles(row, data)
+        metadata_changed = _update_metadata(row, data)
         if added or removed or metadata_changed:
             with repository.transaction():
                 accounts.touch(row)
@@ -135,11 +137,11 @@ def rotate_credentials(*, id: str, company_id: str, actor_sub: str) -> dict:
 
 
 def rotate_subscription_credentials(*, id: str, offer_subscription_id: str | None = None, **_other) -> dict:
-    if not offer_subscription_id:
-        raise validation.invalid("offerSubscriptionId required")
+    subscription_id = validation.parse(SubscriptionCredentialsRequest,
+                                       {"offerSubscriptionId": offer_subscription_id}).offerSubscriptionId
     with repository.locked(f"technical-user:{id}"):
         row = repository.get(id)
-        if row is None or row["origin"] != Origin.SUBSCRIPTION or row["offer_subscription_id"] != offer_subscription_id:
+        if row is None or row["origin"] != Origin.SUBSCRIPTION or row["offer_subscription_id"] != subscription_id:
             raise Problem(MODULE, 404, "not-found", retryable=False)
         state.require_rotatable(row)
         secret = iam_access.call(iam_access.iam().rotate_secret, row["iam_client_id"])

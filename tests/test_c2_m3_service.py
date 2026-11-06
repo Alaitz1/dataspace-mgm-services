@@ -307,6 +307,14 @@ def test_repository_hands_out_copies_and_rolls_a_transaction_back(c2m3):
     assert repository.next_client_id("sa") != row["iam_client_id"]
 
 
+def test_a_subscription_has_one_account_per_party(c2m3):
+    account = _subscription(["Dataspace Discovery"])["result"]["accounts"][0]["technicalUserId"]
+    duplicate = _row(account) | {"id": "other-id"}
+    with pytest.raises(ValueError):
+        repository.save(duplicate)
+    repository.save(duplicate | {"status": "DELETED"})   # a deleted account does not count
+
+
 def test_client_is_removed_when_saving_the_account_fails(c2m3, monkeypatch):
     def fail(*_args, **_kwargs):
         raise RuntimeError("database down")

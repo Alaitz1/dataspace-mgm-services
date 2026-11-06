@@ -30,17 +30,25 @@ from portal_common import standin
 from modules.c2_m3 import gateways
 from modules.c2_m3.models import LIVE_STATUSES, Origin, Status, SubscriptionParty, TechnicalUserRecord
 from modules.c2_m3.repository import repository
+from modules.c2_m3.schemas import (
+    StepApplyWalletAccess,
+    StepCompanyRef,
+    StepCreateForSubscription,
+    StepSubscriptionRef,
+    StepTechnicalUserRef,
+)
 from . import accounts, audit, config, iam_access, roles, state, validation
 from .audit import Actor
 
 
-def _subscription_account(input: dict, *, party: SubscriptionParty, company_id: str, role_names: list[str],
-                          co_viewer_company_id: str | None, actor: Actor) -> dict:
-    subscription_id = input["offerSubscriptionId"]
+def _subscription_account(input: dict, data: StepCreateForSubscription, *, party: SubscriptionParty,
+                          company_id: str, role_names: list[str], co_viewer_company_id: str | None,
+                          actor: Actor) -> dict:
+    subscription_id = data.offerSubscriptionId
     row = repository.find_subscription(subscription_id, party)
     if row is None:
         client_id = accounts.draw_client_id()
-        row = accounts.new_row(company_id=company_id, name=f"{client_id}-{input['name']}", description=None,
+        row = accounts.new_row(company_id=company_id, name=f"{client_id}-{data.name}", description=None,
                                origin=Origin.SUBSCRIPTION, client_id=client_id,
                                offer_subscription_id=subscription_id, subscription_party=party,
                                co_viewer_company_id=co_viewer_company_id)
@@ -64,25 +72,25 @@ def _subscription_account(input: dict, *, party: SubscriptionParty, company_id: 
 
 
 def create_for_subscription(input: dict) -> dict:
-    role_names = validation.validate_create(input, max_name=200, extra_fields=validation.SUBSCRIPTION_STEP_FIELDS)
-    validation.require_keys(input, ("customerCompanyId", "providerCompanyId", "offerSubscriptionId"))
+    data = validation.parse(StepCreateForSubscription, input)
+    role_names = data.role_names
     roles.check_exist(role_names)
-    gateways.company_ready(input["customerCompanyId"])
+    gateways.company_ready(data.customerCompanyId)
     provider_only = set(role_names) & config.provider_roles()
     if provider_only:
-        gateways.company_ready(input["providerCompanyId"])
+        gateways.company_ready(data.providerCompanyId)
     customer_roles = [name for name in role_names if name not in config.provider_roles()]
     actor = Actor.process(input)
-    with repository.locked(f"subscription:{input['offerSubscriptionId']}"):
-        result = [_subscription_account(input, party=SubscriptionParty.CUSTOMER, company_id=input["customerCompanyId"],
-                                        role_names=customer_roles, co_viewer_company_id=input["providerCompanyId"],
-                                        actor=actor)]
+    with repository.locked(f"subscription:{data.offerSubscriptionId}"):
+        result = [_subscription_account(input, data, party=SubscriptionParty.CUSTOMER,
+                                        company_id=data.customerCompanyId, role_names=customer_roles,
+                                        co_viewer_company_id=data.providerCompanyId, actor=actor)]
         if provider_only:
-            result.append(_subscription_account(input, party=SubscriptionParty.PROVIDER,
-                                                company_id=input["providerCompanyId"],
+            result.append(_subscription_account(input, data, party=SubscriptionParty.PROVIDER,
+                                                company_id=data.providerCompanyId,
                                                 role_names=sorted(provider_only), co_viewer_company_id=None,
                                                 actor=actor))
-    return standin.step_reply(input, {"offerSubscriptionId": input["offerSubscriptionId"], "accounts": result})
+    return standin.step_reply(input, {"offerSubscriptionId": data.offerSubscriptionId, "accounts": result})
 
 
 def _wallet_result(row: TechnicalUserRecord) -> dict:
@@ -91,12 +99,10 @@ def _wallet_result(row: TechnicalUserRecord) -> dict:
 
 
 def apply_wallet_access(input: dict) -> dict:
-    user_id, outcome, wallet_ref = input.get("technicalUserId"), input.get("outcome"), input.get("walletAccountRef")
-    with repository.locked(f"technical-user:{user_id}"):
-        row = accounts.find(user_id)
-        if outcome not in ("ACTIVE", "FAILED") or (outcome == "ACTIVE" and not wallet_ref):
-            raise validation.invalid("outcome ACTIVE requires walletAccountRef")
-        if state.apply_wallet_outcome(row, outcome, wallet_ref):
+    data = validation.parse(StepApplyWalletAccess, input)
+    with repository.locked(f"technical-user:{data.technicalUserId}"):
+        row = accounts.find(data.technicalUserId)
+        if state.apply_wallet_outcome(row, data.outcome, data.walletAccountRef):
             with repository.transaction():
                 accounts.touch(row)
                 audit.record(row, "apply-wallet-access", Actor.process(input))
@@ -104,9 +110,9 @@ def apply_wallet_access(input: dict) -> dict:
 
 
 def delete(input: dict) -> dict:
-    user_id = input.get("technicalUserId")
-    with repository.locked(f"technical-user:{user_id}"):
-        row = accounts.find(user_id)
+    data = validation.parse(StepTechnicalUserRef, input)
+    with repository.locked(f"technical-user:{data.technicalUserId}"):
+        row = accounts.find(data.technicalUserId)
         if row["status"] != Status.DELETED:
             state.require_removal_pending(row)
             accounts.delete_account(row, operation="delete", actor=Actor.process(input))
@@ -125,8 +131,7 @@ def _save_with_audit(row: TechnicalUserRecord, operation: str, actor: Actor) -> 
 
 
 def disable_company_technical_users(input: dict) -> dict:
-    validation.require_keys(input, ("companyId",))
-    company_id, actor = input["companyId"], Actor.process(input)
+    company_id, actor = validation.parse(StepCompanyRef, input).companyId, Actor.process(input)
     with repository.locked(f"company:{company_id}"):
         for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=False):
             _set_client_enabled(row, False)
@@ -138,8 +143,7 @@ def disable_company_technical_users(input: dict) -> dict:
 
 
 def enable_company_technical_users(input: dict) -> dict:
-    validation.require_keys(input, ("companyId",))
-    company_id, actor = input["companyId"], Actor.process(input)
+    company_id, actor = validation.parse(StepCompanyRef, input).companyId, Actor.process(input)
     with repository.locked(f"company:{company_id}"):
         for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=True):
             if state.client_enabled_after_enable(row):
@@ -152,8 +156,8 @@ def enable_company_technical_users(input: dict) -> dict:
 
 
 def disable_subscription_technical_users(input: dict) -> dict:
-    validation.require_keys(input, ("offerSubscriptionId",))
-    subscription_id, actor = input["offerSubscriptionId"], Actor.process(input)
+    subscription_id = validation.parse(StepSubscriptionRef, input).offerSubscriptionId
+    actor = Actor.process(input)
     with repository.locked(f"subscription:{subscription_id}"):
         for row in repository.find(offer_subscription_id=subscription_id, statuses=(Status.PENDING, Status.ACTIVE)):
             _set_client_enabled(row, False)

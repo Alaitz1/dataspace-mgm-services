@@ -104,6 +104,12 @@ class InMemoryTechnicalUserRepository:
 
     def save(self, row: TechnicalUserRecord) -> None:
         with self._lock:
+            party = row["subscription_party"]
+            if party and row["status"] != "DELETED" and any(
+                    other["id"] != row["id"] and other["status"] != "DELETED"
+                    and other["offer_subscription_id"] == row["offer_subscription_id"]
+                    and other["subscription_party"] == party for other in self._users.values()):
+                raise ValueError("a subscription has one account per subscription party")   # README 5: unique
             self._users[row["id"]] = copy.deepcopy(row)
 
     def remove(self, user_id: str) -> None:
