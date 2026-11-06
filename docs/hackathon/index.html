@@ -259,7 +259,7 @@
   <div class="wrap">
     <div class="eyebrow">Work packages</div>
     <h2>Six teams, one data space</h2>
-    <div class="onb"><b>Six teams of four people, every module once.</b> Only Team 1 builds the onboarding: <code>C1-M2</code> Registration and <code>C1-M3</code> Application review with the EBW-Connector. The scaffold mounts a stand-in for every module, so the go-live runs even if a team is not done. Provided, not built: <code>C12-M1</code> Process Orchestration, <code>C5-M1</code> EBW-Connector, Keycloak (<code>C2-M5</code>). Not part of the day: <code>C8-M1</code> Offers, <code>C10-M1</code> Subscriptions.</div>
+    <div class="onb"><b>Six teams, every module once.</b> Only Team 1 builds the onboarding: <code>C1-M2</code> Registration and <code>C1-M3</code> Application review with the EBW-Connector. The scaffold mounts a stand-in for every module, so the go-live runs even if a team is not done. Provided, not built: <code>C12-M1</code> Process Orchestration, <code>C5-M1</code> EBW-Connector, Keycloak (<code>C2-M5</code>). Not part of the day: <code>C8-M1</code> Offers, <code>C10-M1</code> Subscriptions.</div>
     <p class="lead" style="margin-bottom:12px">Pick a module to see which teams work on it.</p>
     <div class="chips" id="chips" role="group" aria-label="Filter by module"></div>
     <div class="teams" id="teams"></div>
@@ -382,19 +382,23 @@ const MOD = {
 };
 // 6 teams × 4 people, every module once (decision 5 Nov). C8-M1 Offers and C10-M1 Subscriptions are not part of the day.
 const TEAMS = [
-  ["Onboarding", ["C1-M2", "C1-M3"]], ["Company and CSP", ["C3-M1", "C3-M2"]], ["Wallet and credentials", ["C4-M2", "C4-M1"]],
-  ["People and access", ["C2-M2", "C2-M3", "C6-M1"]], ["Notifications", ["C11-M1", "Bonus"]], ["Portal UI", ["UI"]],
+  ["Onboarding", ["C1-M2", "C1-M3"], "Stephan, Vamshi, Saud, Arjun"],
+  ["Company and CSP", ["C3-M1", "C3-M2"], "Ingo, Arman"],
+  ["Wallet and credentials", ["C4-M2", "C4-M1"], "Aditya, Pratham, Anushka, Mathias, Anubhav"],
+  ["People and access", ["C2-M2", "C2-M3", "C6-M1"], "Angel, Alaitz, Devaji"],
+  ["Notifications", ["C11-M1", "Bonus"], "Tanvir, Wahidul Azam, Prosonul"],
+  ["Portal UI", ["UI"], "Zahidul, Jonas, Haydar, Mathias, Payam, Guido"],
 ];
 let selected = null;
 function renderWork() {
   const chips = document.getElementById("chips");
   chips.innerHTML = Object.entries(MOD).map(([k, v]) =>
     `<button class="chip" aria-pressed="${selected === k}" data-mod="${k}">${k} · ${v}</button>`).join("");
-  document.getElementById("teams").innerHTML = TEAMS.map(([theme, mods], i) => {
+  document.getElementById("teams").innerHTML = TEAMS.map(([theme, mods, people], i) => {
     const hit = selected && mods.includes(selected);
     return `<div class="team ${selected ? (hit ? "hit" : "dim") : ""}"><h3>Team ${i + 1} · ${theme}<span class="pill">team/${i + 1}</span></h3><ul>
       ${mods.map((m) => `<li class="${m === selected ? "hl" : ""}">${m} · ${MOD[m]}</li>`).join("")}
-    </ul></div>`;
+    </ul>${people ? `<p class="note" style="margin:8px 0 0">${people}</p>` : ""}</div>`;
   }).join("");
 }
 document.addEventListener("click", (e) => {
