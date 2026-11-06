@@ -25,6 +25,8 @@
 """Steps for Process Orchestration (README 8); every step is idempotent through its business key (6.9)."""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from portal_common import standin
 
 from modules.c2_m3 import gateways
@@ -58,8 +60,8 @@ def _subscription_account(input: dict, data: StepCreateForSubscription, *, party
     first_completion = row["iam_client_uuid"] is None
     before = set() if first_completion else set(iam_access.call(iam.roles_for, row["iam_client_id"]))
     company = gateways.company(company_id)
-    created = iam_access.call(iam.create_or_complete, row["iam_client_id"], name=row["name"], description=None,
-                              company_id=company_id, bpn=company["bpn"], roles=assigned,
+    created = iam_access.call(iam.create_or_complete, row["iam_client_id"], owner_id=row["id"], name=row["name"],
+                              description=None, company_id=company_id, bpn=company["bpn"], roles=assigned,
                               enabled=not row["disabled"] and row["status"] != Status.INACTIVE)
     if first_completion:
         after = set(iam_access.call(iam.roles_for, row["iam_client_id"]))
@@ -75,13 +77,18 @@ def create_for_subscription(input: dict) -> dict:
     data = validation.parse(StepCreateForSubscription, input)
     role_names = data.role_names
     roles.check_exist(role_names)
-    gateways.company_ready(data.customerCompanyId)
     provider_only = set(role_names) & config.provider_roles()
-    if provider_only:
-        gateways.company_ready(data.providerCompanyId)
     customer_roles = [name for name in role_names if name not in config.provider_roles()]
     actor = Actor.process(input)
-    with repository.locked(f"subscription:{data.offerSubscriptionId}"):
+    # lock order company, subscription, account: a deactivation of a company or the subscription cannot run
+    # between the check of the company and the creation of its account
+    keys = [f"company:{data.customerCompanyId}", f"subscription:{data.offerSubscriptionId}"]
+    if provider_only:
+        keys.append(f"company:{data.providerCompanyId}")
+    with repository.locked_all(*keys):
+        gateways.company_ready(data.customerCompanyId)
+        if provider_only:
+            gateways.company_ready(data.providerCompanyId)
         result = [_subscription_account(input, data, party=SubscriptionParty.CUSTOMER,
                                         company_id=data.customerCompanyId, role_names=customer_roles,
                                         co_viewer_company_id=data.providerCompanyId, actor=actor)]
@@ -130,13 +137,42 @@ def _save_with_audit(row: TechnicalUserRecord, operation: str, actor: Actor) -> 
         audit.record(row, operation, actor)
 
 
+def _each_locked(candidates: list[TechnicalUserRecord], applies: Callable[[TechnicalUserRecord], bool],
+                 work: Callable[[TechnicalUserRecord], None]) -> None:
+    """Runs `work` on each account under the lock of that account, on the row as it is by then (a wallet result or a
+    change may have been stored since the list was read) and only if `applies` still holds."""
+    for candidate in candidates:
+        with repository.locked(f"technical-user:{candidate['id']}"):
+            row = repository.get(candidate["id"])
+            if row is not None and applies(row):
+                work(row)
+
+
+def _disable(row: TechnicalUserRecord, operation: str, actor: Actor) -> None:
+    _set_client_enabled(row, False)
+    state.disable(row)
+    _save_with_audit(row, operation, actor)
+
+
+def _enable(row: TechnicalUserRecord, operation: str, actor: Actor) -> None:
+    if state.client_enabled_after_enable(row):
+        _set_client_enabled(row, True)
+    state.enable(row)
+    _save_with_audit(row, operation, actor)
+
+
+def _deactivate(row: TechnicalUserRecord, actor: Actor) -> None:
+    _set_client_enabled(row, False)
+    state.deactivate_subscription_account(row)
+    _save_with_audit(row, "disable-subscription-technical-users", actor)
+
+
 def disable_company_technical_users(input: dict) -> dict:
     company_id, actor = validation.parse(StepCompanyRef, input).companyId, Actor.process(input)
     with repository.locked(f"company:{company_id}"):
-        for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=False):
-            _set_client_enabled(row, False)
-            state.disable(row)
-            _save_with_audit(row, "disable-company-technical-users", actor)
+        _each_locked(repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=False),
+                     lambda row: not row["disabled"] and row["status"] in LIVE_STATUSES,
+                     lambda row: _disable(row, "disable-company-technical-users", actor))
         ids = [row["id"] for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES,
                                                     disabled=True)]
     return standin.step_reply(input, {"companyId": company_id, "technicalUserIds": sorted(ids)})
@@ -145,11 +181,9 @@ def disable_company_technical_users(input: dict) -> dict:
 def enable_company_technical_users(input: dict) -> dict:
     company_id, actor = validation.parse(StepCompanyRef, input).companyId, Actor.process(input)
     with repository.locked(f"company:{company_id}"):
-        for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=True):
-            if state.client_enabled_after_enable(row):
-                _set_client_enabled(row, True)
-            state.enable(row)
-            _save_with_audit(row, "enable-company-technical-users", actor)
+        _each_locked(repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES, disabled=True),
+                     lambda row: row["disabled"] and row["status"] in LIVE_STATUSES,
+                     lambda row: _enable(row, "enable-company-technical-users", actor))
         ids = [row["id"] for row in repository.find(owner_company_id=company_id, statuses=LIVE_STATUSES,
                                                     disabled=False)]
     return standin.step_reply(input, {"companyId": company_id, "technicalUserIds": sorted(ids)})
@@ -159,10 +193,9 @@ def disable_subscription_technical_users(input: dict) -> dict:
     subscription_id = validation.parse(StepSubscriptionRef, input).offerSubscriptionId
     actor = Actor.process(input)
     with repository.locked(f"subscription:{subscription_id}"):
-        for row in repository.find(offer_subscription_id=subscription_id, statuses=(Status.PENDING, Status.ACTIVE)):
-            _set_client_enabled(row, False)
-            state.deactivate_subscription_account(row)
-            _save_with_audit(row, "disable-subscription-technical-users", actor)
+        _each_locked(repository.find(offer_subscription_id=subscription_id, statuses=(Status.PENDING, Status.ACTIVE)),
+                     lambda row: row["status"] in (Status.PENDING, Status.ACTIVE),
+                     lambda row: _deactivate(row, actor))
         ids = [row["id"] for row in repository.find(offer_subscription_id=subscription_id,
                                                     statuses=(Status.INACTIVE,))]
     return standin.step_reply(input, {"offerSubscriptionId": subscription_id, "technicalUserIds": sorted(ids)})

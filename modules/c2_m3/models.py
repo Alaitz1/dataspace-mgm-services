@@ -85,6 +85,7 @@ class TechnicalUserRecord(TypedDict):
     disabled: bool
     created_at: str
     changed_at: str
+    version: int
 
 
 class AuditLogRecord(TypedDict):

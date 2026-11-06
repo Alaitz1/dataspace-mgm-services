@@ -83,9 +83,9 @@ def check_technical_user(*, id: str, companyId: str | None = None, offerSubscrip
     return services.check_technical_user(id=id, company_id=companyId, offer_subscription_id=offerSubscriptionId)
 
 
-def rotate_subscription_credentials(*, id: str, offerSubscriptionId: str | None = None, **_other) -> dict:
+def rotate_subscription_credentials(*, id: str, offerSubscriptionId: str | None = None, **other) -> dict:
     """9.2: a new secret of the subscription account, only in this answer."""
-    return services.rotate_subscription_credentials(id=id, offer_subscription_id=offerSubscriptionId)
+    return services.rotate_subscription_credentials(id=id, offer_subscription_id=offerSubscriptionId, **other)
 
 
 def list_technical_roles(*, lang: str | None = None, **_other) -> list[dict]:

@@ -36,7 +36,8 @@ from portal_common.problems import route_class
 from . import interface
 from .interface import MODULE
 from .models import Origin, Status, WalletAccess
-from .services import handle_event
+from .schemas import SubscriptionCredentialsRequest
+from .services import handle_event, validation
 
 router = APIRouter(prefix=spec.module(MODULE).base_path, route_class=route_class(MODULE), tags=[MODULE])
 
@@ -138,7 +139,8 @@ def check_technical_user(id: str, companyId: str, offerSubscriptionId: str | Non
 @router.post("/internal/technical-users/{id}/credentials/rotate", summary="Rotate a subscription account's secret")
 def rotate_subscription_credentials(id: str, body: dict = Body(...),
                                     _: dict = _perm("POST", "/internal/technical-users/{id}/credentials/rotate")):
-    return interface.rotate_subscription_credentials(id=id, offerSubscriptionId=body.get("offerSubscriptionId"))
+    request = validation.parse(SubscriptionCredentialsRequest, body)   # undeclared fields (even `id`) are a 400
+    return interface.rotate_subscription_credentials(id=id, offerSubscriptionId=request.offerSubscriptionId)
 
 
 @router.get("/internal/technical-roles", summary="All technical user roles")

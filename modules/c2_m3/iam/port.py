@@ -36,6 +36,10 @@ class IamNotFound(IamError):
     """The Portal IAM answered 404 for an object the adapter knew (a cached ID may be stale)."""
 
 
+class IamConflict(IamError):
+    """The client exists but belongs to another account: it is never adopted, changed or deleted."""
+
+
 class UnknownRole(ValueError):
     """A role is not on the client `TECHNICAL_ROLES_CLIENT` (public error `role-not-assignable`, 400)."""
 
@@ -47,12 +51,14 @@ class TechnicalUserIam(Protocol):
     def ensure_roles(self, roles: list[str]) -> None:
         """Raises `UnknownRole` if one of the roles does not exist."""
 
-    def client(self, client_id: str) -> dict | None: ...
+    def client(self, client_id: str) -> dict | None:
+        """The client with this client ID, whoever it belongs to, or None if the ID is free."""
 
-    def create_or_complete(self, client_id: str, *, name: str, description: str | None, company_id: str,
-                           bpn: str, roles: list[str], enabled: bool = True) -> dict:
-        """Creates the client if it is missing and completes attributes and roles; the result has
-        `id` (internal ID) and `serviceAccountUserId`."""
+    def create_or_complete(self, client_id: str, *, owner_id: str, name: str, description: str | None,
+                           company_id: str, bpn: str, roles: list[str], enabled: bool = True) -> dict:
+        """Creates the client for the account `owner_id` if it is missing and completes attributes and roles; the
+        result has `id` (internal ID) and `serviceAccountUserId`. A client of another account (or without owner)
+        raises `IamConflict`: its secret and company are never taken over."""
 
     def roles_for(self, client_id: str) -> list[str]: ...
 
@@ -67,5 +73,5 @@ class TechnicalUserIam(Protocol):
 
     def rotate_secret(self, client_id: str) -> str: ...
 
-    def delete(self, client_id: str) -> None:
-        """A client that is already gone counts as deleted."""
+    def delete(self, client_id: str, *, owner_id: str) -> None:
+        """A client that is already gone counts as deleted; one of another account raises `IamConflict`."""

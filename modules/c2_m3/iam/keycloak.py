@@ -38,7 +38,9 @@ import httpx
 from portal_common import http, tokens
 from portal_common.problems import Problem
 
-from .port import IamError, IamNotFound, UnknownRole
+from .port import IamConflict, IamError, IamNotFound, UnknownRole
+
+OWNER_ATTRIBUTE = "c2_m3_technical_user_id"   # marks the clients this module created, with the ID of their account
 
 
 def _retry_stale(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -202,7 +204,8 @@ class KeycloakIAM:
     def client(self, client_id: str) -> dict | None:
         return self._find_client(client_id)
 
-    def _create_client(self, client_id: str, name: str, description: str | None, enabled: bool) -> None:
+    def _create_client(self, client_id: str, owner_id: str, name: str, description: str | None,
+                       enabled: bool) -> None:
         scopes = [scope.strip() for scope in os.environ.get(
             "TECHNICAL_USER_CLIENT_DEFAULT_SCOPES", "basic,roles,catena,technical-roles").split(",") if scope.strip()]
         self._call("POST", "/clients", accept=(409,), json={
@@ -210,7 +213,17 @@ class KeycloakIAM:
             "protocol": "openid-connect", "publicClient": False, "clientAuthenticatorType": "client-secret",
             "serviceAccountsEnabled": True, "standardFlowEnabled": False, "implicitFlowEnabled": False,
             "directAccessGrantsEnabled": False, "fullScopeAllowed": False,
+            "attributes": {OWNER_ATTRIBUTE: owner_id},
             "defaultClientScopes": scopes, "optionalClientScopes": []})
+
+    def _check_owner(self, client_id: str, owner_id: str) -> str:
+        """The UUID of the client, if it is this account's; a foreign or unmarked client is never adopted."""
+        client = self._find_client(client_id)
+        if client is None:
+            raise IamNotFound(f"client {client_id} was not found")
+        if (client.get("attributes") or {}).get(OWNER_ATTRIBUTE) != owner_id:
+            raise IamConflict(f"client {client_id} belongs to another account")
+        return client["id"]
 
     def _set_attributes(self, user_id: str, company_id: str, bpn: str) -> None:
         user = self._call("GET", f"/users/{user_id}").json()
@@ -228,13 +241,13 @@ class KeycloakIAM:
             self._call("PUT", f"/clients/{client_uuid}", json=representation | {"enabled": enabled})
 
     @_retry_stale
-    def create_or_complete(self, client_id: str, *, name: str, description: str | None, company_id: str,
-                           bpn: str, roles: list[str], enabled: bool = True) -> dict:
+    def create_or_complete(self, client_id: str, *, owner_id: str, name: str, description: str | None,
+                           company_id: str, bpn: str, roles: list[str], enabled: bool = True) -> dict:
         self.ensure_roles(roles)
-        client_uuid = self._client_uuid(client_id)
-        if client_uuid is None:
-            self._create_client(client_id, name, description, enabled)
-            client_uuid = self._require_uuid(client_id)
+        if self._client_uuid(client_id) is None:
+            self._create_client(client_id, owner_id, name, description, enabled)
+        # created by us, left over from an earlier attempt of this account, or somebody else's (409 above)
+        client_uuid = self._check_owner(client_id, owner_id)
         user_id = self._service_account(client_uuid)
         self._set_attributes(user_id, company_id, bpn)
         missing = set(roles) - {role["name"] for role in self._mapped_roles(user_id)}
@@ -271,10 +284,12 @@ class KeycloakIAM:
     def rotate_secret(self, client_id: str) -> str:
         return self._secret_value(self._call("POST", f"/clients/{self._require_uuid(client_id)}/client-secret"))
 
-    def delete(self, client_id: str) -> None:
+    def delete(self, client_id: str, *, owner_id: str) -> None:
         for _attempt in range(2):   # the second one looks the client up again if the cached ID was stale
-            client_uuid = self._client_uuid(client_id)
-            if client_uuid is None:
+            try:
+                client_uuid = self._check_owner(client_id, owner_id)
+            except IamNotFound:
+                self._drop_client(client_id)
                 return
             try:
                 self._call("DELETE", f"/clients/{client_uuid}")

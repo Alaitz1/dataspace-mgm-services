@@ -41,24 +41,27 @@ from .config import MODULE
 def create_technical_user(*, company_id: str, body: dict, actor_sub: str) -> dict:
     data = validation.parse(TechnicalUserCreate, body)
     role_names = data.role_names
-    company = gateways.company_ready(company_id)
-    roles.require_assignable(company_id, role_names)
-    wallet_requested, assigned = roles.split(role_names)
-    row = accounts.new_row(company_id=company_id, name=data.name, description=data.description, origin=Origin.OWN)
-    iam = iam_access.iam()
-    try:
-        created = iam_access.call(iam.create_or_complete, row["iam_client_id"], name=row["name"],
-                                  description=row["description"], company_id=company_id, bpn=company["bpn"],
-                                  roles=assigned)
-        secret = iam_access.call(iam.secret, row["iam_client_id"])
-        accounts.complete_creation(row, created, wallet_requested=wallet_requested, added_roles=assigned,
-                                   operation="createTechnicalUser", actor=Actor.person(actor_sub))
-    except Exception:
-        repository.remove(row["id"])
-        with contextlib.suppress(Problem):
-            iam_access.call(iam.delete, row["iam_client_id"])
-        raise
-    return projections.details(row, Viewer.OWNER) | {"credentials": projections.credentials(row, secret)}
+    # the company lock keeps a deactivation of the company from running between the check and the creation
+    with repository.locked(f"company:{company_id}"):
+        company = gateways.company_ready(company_id)
+        roles.require_assignable(company_id, role_names)
+        wallet_requested, assigned = roles.split(role_names)
+        row = accounts.new_row(company_id=company_id, name=data.name, description=data.description,
+                               origin=Origin.OWN)
+        iam = iam_access.iam()
+        try:
+            created = iam_access.call(iam.create_or_complete, row["iam_client_id"], owner_id=row["id"],
+                                      name=row["name"], description=row["description"], company_id=company_id,
+                                      bpn=company["bpn"], roles=assigned)
+            secret = iam_access.call(iam.secret, row["iam_client_id"])
+            accounts.complete_creation(row, created, wallet_requested=wallet_requested, added_roles=assigned,
+                                       operation="createTechnicalUser", actor=Actor.person(actor_sub))
+        except Exception:
+            repository.remove(row["id"])
+            with contextlib.suppress(Problem):   # never touches a client that is not this account's
+                iam_access.call(iam.delete, row["iam_client_id"], owner_id=row["id"])
+            raise
+    return projections.details(row, Viewer.OWNER, roles=assigned) | {"credentials": projections.credentials(row, secret)}
 
 
 def _update_roles(row: TechnicalUserRecord, data: TechnicalUserUpdate) -> tuple[list[str], list[str]]:
@@ -95,12 +98,17 @@ def update_technical_user(*, id: str, company_id: str, body: dict, actor_sub: st
         data = validation.parse(TechnicalUserUpdate, body)
         state.require_changeable(row)
         added, removed = _update_roles(row, data)
-        metadata_changed = _update_metadata(row, data)
-        if added or removed or metadata_changed:
+        recorded = bool(added or removed)
+        if recorded:   # the roles are changed in the Portal IAM already: audit them before anything else can fail
             with repository.transaction():
                 accounts.touch(row)
                 audit.record(row, "updateTechnicalUser", actor)
                 audit.record_role_changes(row, added, removed, "updateTechnicalUser", actor)
+        if _update_metadata(row, data):
+            with repository.transaction():
+                accounts.touch(row)
+                if not recorded:
+                    audit.record(row, "updateTechnicalUser", actor)
         return projections.details(row, Viewer.OWNER)
 
 
@@ -136,9 +144,10 @@ def rotate_credentials(*, id: str, company_id: str, actor_sub: str) -> dict:
         return projections.credentials(row, secret)
 
 
-def rotate_subscription_credentials(*, id: str, offer_subscription_id: str | None = None, **_other) -> dict:
-    subscription_id = validation.parse(SubscriptionCredentialsRequest,
-                                       {"offerSubscriptionId": offer_subscription_id}).offerSubscriptionId
+def rotate_subscription_credentials(*, id: str, offer_subscription_id: str | None = None, **other) -> dict:
+    request = {} if offer_subscription_id is None else {"offerSubscriptionId": offer_subscription_id}
+    # the whole request is validated (undeclared fields are a 400) before the secret is touched
+    subscription_id = validation.parse(SubscriptionCredentialsRequest, request | other).offerSubscriptionId
     with repository.locked(f"technical-user:{id}"):
         row = repository.get(id)
         if row is None or row["origin"] != Origin.SUBSCRIPTION or row["offer_subscription_id"] != subscription_id:

@@ -26,11 +26,10 @@
 from __future__ import annotations
 
 import threading
-import zlib
 
 import pytest
 
-from modules.c2_m3.repository import LOCK_STRIPES, InMemoryTechnicalUserRepository
+from modules.c2_m3.repository import InMemoryTechnicalUserRepository
 
 
 class Bus:
@@ -138,16 +137,6 @@ def test_the_event_data_is_copied(repo, bus):
     assert bus.sent[0][1] == {"technicalUserId": "u1"}
 
 
-def _stripe(key: str) -> int:
-    return zlib.crc32(key.encode()) % LOCK_STRIPES
-
-
-def _keys_on_different_stripes() -> tuple[str, str]:
-    first = "technical-user:a"
-    other = next(f"technical-user:{n}" for n in range(1000) if _stripe(f"technical-user:{n}") != _stripe(first))
-    return first, other
-
-
 def _run(repo, key: str, entered: threading.Event, release: threading.Event | None = None) -> threading.Thread:
     def work() -> None:
         with repo.locked(key):
@@ -160,7 +149,7 @@ def _run(repo, key: str, entered: threading.Event, release: threading.Event | No
 
 
 def test_a_slow_holder_blocks_only_its_own_key(repo):
-    first, other = _keys_on_different_stripes()
+    first, other = "technical-user:a", "technical-user:b"
     holding, release, other_entered = threading.Event(), threading.Event(), threading.Event()
     slow = _run(repo, first, holding, release)
     assert holding.wait(5)

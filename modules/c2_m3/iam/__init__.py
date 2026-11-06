@@ -29,9 +29,9 @@ import os
 
 from .keycloak import KeycloakIAM
 from .memory import MemoryIAM
-from .port import IamError, TechnicalUserIam, UnknownRole
+from .port import IamConflict, IamError, TechnicalUserIam, UnknownRole
 
-__all__ = ["IamError", "TechnicalUserIam", "UnknownRole", "get", "reset"]
+__all__ = ["IamConflict", "IamError", "TechnicalUserIam", "UnknownRole", "get", "reset"]
 
 _memory: MemoryIAM | None = None
 _keycloak: KeycloakIAM | None = None
@@ -48,5 +48,7 @@ def get() -> TechnicalUserIam:
 
 def reset() -> None:
     global _memory, _keycloak
+    if _memory is not None:
+        _memory.clear()
     _memory = None
     _keycloak = None

@@ -122,6 +122,7 @@ class FakeKeycloak:
         self.delete_status = 204
         self.uuid = "k1"                 # internal ID of the client in this fake
         self.user = "u1"                 # its service account user
+        self.owner: str | None = "o1"    # the owner marker of the client (attribute of the client)
         self.roles = "rc"                # the client with the technical user roles
         self.gone: set[str] = set()      # internal IDs of clients and users that Keycloak no longer knows (404)
 
@@ -143,9 +144,12 @@ class FakeKeycloak:
         if key == ("GET", "/clients"):
             if wanted == "technical_roles_management":
                 return httpx.Response(200, json=[{"id": self.roles}])
-            return httpx.Response(200, json=[{"id": self.uuid, "clientId": wanted}] if self.client_exists else [])
+            attributes = {keycloak.OWNER_ATTRIBUTE: self.owner} if self.owner else {}
+            return httpx.Response(200, json=[{"id": self.uuid, "clientId": wanted, "attributes": attributes}]
+                                  if self.client_exists else [])
         if key == ("POST", "/clients"):
             self.client_exists = True
+            self.owner = (kwargs["json"].get("attributes") or {}).get(keycloak.OWNER_ATTRIBUTE)
             return httpx.Response(201)
         if method == "DELETE" and path == f"/clients/{self.uuid}":
             return httpx.Response(self.delete_status)
@@ -173,7 +177,8 @@ def fake(monkeypatch):
 
 def test_client_is_created_in_the_documented_order(fake):
     created = keycloak.KeycloakIAM().create_or_complete(
-        "sa1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=["Dataspace Discovery"])
+        "sa1", owner_id="o1", name="Agent", description=None, company_id="c1", bpn="BPNL1",
+        roles=["Dataspace Discovery"])
     assert created == {"id": "k1", "clientId": "sa1", "serviceAccountUserId": "u1", "name": "Agent",
                        "description": None, "enabled": True}
     order = [call for call in fake.calls if call[0] in ("POST", "PUT") or call[1].endswith("service-account-user")]
@@ -183,20 +188,37 @@ def test_client_is_created_in_the_documented_order(fake):
     assert client["optionalClientScopes"] == []
     assert client["defaultClientScopes"] == ["basic", "roles", "catena", "technical-roles"]
     assert client["serviceAccountsEnabled"] is True and client["fullScopeAllowed"] is False
+    assert client["attributes"] == {keycloak.OWNER_ATTRIBUTE: "o1"}   # the marker is written with the client
     assert fake.bodies[("PUT", "/users/u1")]["attributes"] == {"company_id": ["c1"], "bpn": ["BPNL1"]}
 
 
 def test_an_existing_client_is_completed_not_created_again(fake):
     fake.client_exists = True
     keycloak.KeycloakIAM().create_or_complete(
-        "sa1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=[])
+        "sa1", owner_id="o1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=[])
     assert ("POST", "/clients") not in fake.calls
+
+
+@pytest.mark.parametrize("owner", ["another-account", None])
+def test_a_client_of_another_owner_or_without_one_is_never_adopted(fake, owner):
+    fake.client_exists, fake.owner = True, owner
+    with pytest.raises(keycloak.IamConflict):
+        keycloak.KeycloakIAM().create_or_complete(
+            "sa1", owner_id="o1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=[])
+    assert not [call for call in fake.calls if call[0] != "GET"], "nothing of the foreign client is changed"
+
+
+def test_a_client_of_another_owner_is_never_deleted(fake):
+    fake.client_exists, fake.owner = True, "another-account"
+    with pytest.raises(keycloak.IamConflict):
+        keycloak.KeycloakIAM().delete("sa1", owner_id="o1")
+    assert not [call for call in fake.calls if call[0] == "DELETE"]
 
 
 def test_unknown_role_is_rejected_before_anything_is_written(fake):
     with pytest.raises(keycloak.UnknownRole):
         keycloak.KeycloakIAM().create_or_complete(
-            "sa1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=["Nope"])
+            "sa1", owner_id="o1", name="Agent", description=None, company_id="c1", bpn="BPNL1", roles=["Nope"])
     assert not [call for call in fake.calls if call[0] != "GET"]
 
 
@@ -219,14 +241,14 @@ def test_lookups_are_cached_per_adapter(fake):
 
 def test_deleting_a_client_that_is_already_gone_counts_as_deleted(fake):
     fake.client_exists, fake.delete_status = True, 404
-    keycloak.KeycloakIAM().delete("sa1")
+    keycloak.KeycloakIAM().delete("sa1", owner_id="o1")
     assert ("DELETE", "/clients/k1") in fake.calls
 
 
 def test_other_iam_failures_are_reported(fake):
     fake.client_exists, fake.delete_status = True, 500
     with pytest.raises(IamError):
-        keycloak.KeycloakIAM().delete("sa1")
+        keycloak.KeycloakIAM().delete("sa1", owner_id="o1")
 
 
 def _recreated(fake) -> None:
@@ -280,7 +302,7 @@ def test_delete_with_a_stale_id_removes_the_recreated_client(fake):
     adapter = keycloak.KeycloakIAM()
     adapter.secret("sa1")
     _recreated(fake)
-    adapter.delete("sa1")
+    adapter.delete("sa1", owner_id="o1")
     assert ("DELETE", "/clients/k2") in fake.calls
 
 
@@ -290,5 +312,5 @@ def test_delete_of_a_client_that_vanished_is_not_an_error(fake):
     adapter.secret("sa1")
     fake.gone.add(fake.uuid)
     fake.client_exists = False
-    adapter.delete("sa1")
+    adapter.delete("sa1", owner_id="o1")
     assert not [call for call in fake.calls if call[0] == "DELETE" and call[1] == "/clients/k2"]

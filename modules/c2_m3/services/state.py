@@ -35,9 +35,14 @@ def _invalid_state() -> Problem:
     return Problem(MODULE, 409, "invalid-state", retryable=False)
 
 
-def after_creation(row: TechnicalUserRecord, *, wallet_requested: bool) -> None:
+def after_creation(row: TechnicalUserRecord, *, wallet_requested: bool) -> bool:
+    """Status once the client exists. An account that was deactivated meanwhile stays `INACTIVE` (6.1: final) and
+    asks for no wallet. Returns whether wallet access was requested."""
+    if row["status"] == Status.INACTIVE:
+        return False
     row["status"] = Status.PENDING if wallet_requested else Status.ACTIVE
     row["wallet_access"] = WalletAccess.REQUESTED if wallet_requested else WalletAccess.NONE
+    return wallet_requested
 
 
 def require_changeable(row: TechnicalUserRecord) -> None:

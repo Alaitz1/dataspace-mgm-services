@@ -58,7 +58,13 @@ def require_owner(row: TechnicalUserRecord, company_id: str | None) -> None:
 
 
 def draw_client_id() -> str:
-    return repository.next_client_id(config.client_id_prefix())
+    """The next client ID of the sequence that is free in the Portal IAM: after a restart the sequence starts again,
+    and the IAM can hold clients of other origin; such a client is never taken over."""
+    for _attempt in range(1000):
+        candidate = repository.next_client_id(config.client_id_prefix())
+        if iam_access.call(iam_access.iam().client, candidate) is None:
+            return candidate
+    raise Problem(MODULE, 502, "iam-error", detail="no free client ID in the Portal IAM", retryable=True)
 
 
 def new_row(*, company_id: str, name: str, description: str | None, origin: Origin, client_id: str | None = None,
@@ -72,7 +78,7 @@ def new_row(*, company_id: str, name: str, description: str | None, origin: Orig
         "subscription_party": subscription_party, "co_viewer_company_id": co_viewer_company_id,
         "iam_client_id": client_id or draw_client_id(), "iam_client_uuid": None,
         "iam_service_account_user_id": None, "status": Status.PENDING, "wallet_access": WalletAccess.NONE,
-        "wallet_account_ref": None, "disabled": False, "created_at": now, "changed_at": now}
+        "wallet_account_ref": None, "disabled": False, "created_at": now, "changed_at": now, "version": 0}
     repository.save(row)
     return row
 
@@ -87,7 +93,7 @@ def complete_creation(row: TechnicalUserRecord, created: dict, *, wallet_request
     """Stores the IAM IDs and the status; rows, logs and events are one transaction (README 6.8)."""
     row["iam_client_uuid"] = created["id"]
     row["iam_service_account_user_id"] = created.get("serviceAccountUserId")
-    state.after_creation(row, wallet_requested=wallet_requested)
+    wallet_requested = state.after_creation(row, wallet_requested=wallet_requested)
     with repository.transaction():
         touch(row)
         audit.record(row, operation, actor)
@@ -100,7 +106,7 @@ def complete_creation(row: TechnicalUserRecord, created: dict, *, wallet_request
 def delete_account(row: TechnicalUserRecord, *, operation: str, actor: Actor) -> None:
     """Deletes the client in the Portal IAM and marks the row `DELETED` (7.5 step 4, 8.3)."""
     roles = iam_access.call(iam_access.iam().roles_for, row["iam_client_id"])
-    iam_access.call(iam_access.iam().delete, row["iam_client_id"])
+    iam_access.call(iam_access.iam().delete, row["iam_client_id"], owner_id=row["id"])
     state.mark_deleted(row)
     with repository.transaction():
         touch(row)

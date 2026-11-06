@@ -41,9 +41,11 @@ def summary(row: TechnicalUserRecord, viewer: Viewer) -> dict:
             "createdAt": row["created_at"], "changedAt": row["changed_at"]}
 
 
-def details(row: TechnicalUserRecord, viewer: Viewer) -> dict:
-    """7.3: the roles come from the Portal IAM; with wallet access the wallet role is listed too."""
-    roles = iam_access.call(iam_access.iam().roles_for, row["iam_client_id"]) if row["iam_client_uuid"] else []
+def details(row: TechnicalUserRecord, viewer: Viewer, roles: list[str] | None = None) -> dict:
+    """7.3: the roles come from the Portal IAM (or are given by the caller, who has just set them); with wallet
+    access the wallet role is listed too."""
+    if roles is None:
+        roles = iam_access.call(iam_access.iam().roles_for, row["iam_client_id"]) if row["iam_client_uuid"] else []
     if row["wallet_access"] != WalletAccess.NONE:
         roles = sorted(set(roles) | config.wallet_roles())
     result = summary(row, viewer) | {"authMethod": "SECRET", "roles": [{"name": name} for name in roles]}

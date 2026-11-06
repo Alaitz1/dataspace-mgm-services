@@ -25,9 +25,8 @@ from __future__ import annotations
 import copy
 import logging
 import threading
-import zlib
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Protocol
 
 from portal_common import events
@@ -35,7 +34,6 @@ from portal_common import events
 from .models import AuditLogRecord, RoleAssignmentLogRecord, TechnicalUserRecord
 
 log = logging.getLogger("portal.c2-m3")
-LOCK_STRIPES = 64
 Publisher = Callable[[str, dict], None]
 
 
@@ -43,16 +41,46 @@ def _publish(event_type: str, data: dict) -> None:
     events.publish("c2-m3", event_type, data)
 
 
+class Conflict(RuntimeError):
+    """A row was changed by someone else since it was read: the writer must read it again."""
+
+
+class _KeyLocks:
+    """One lock per key, removed again when nobody uses it (no false sharing between different keys)."""
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: dict[str, list] = {}   # key -> [lock, number of users]
+
+    @contextmanager
+    def hold(self, key: str) -> Iterator[None]:
+        with self._guard:
+            entry = self._locks.setdefault(key, [threading.RLock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self._guard:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    del self._locks[key]
+
+
 class TechnicalUserRepository(Protocol):
     """Persistence contract of C2-M3: rows are values, so change a row and then `save` it.
 
-    `locked(key)` serializes the work on one key (never nest two different keys). `transaction()` makes rows, logs
+    `locked(key)` serializes the work on one key; the order of nested keys is company, then subscription, then
+    account, and `locked_all` takes several keys at once in a fixed order. `transaction()` makes rows, logs
     and events (`add_event`) one unit: the events are published only after the outermost transaction committed,
-    and a failed transaction drops them (README 4: outbox)."""
+    and a failed transaction drops them (README 4: outbox). `save` raises `Conflict` for a row that changed since
+    it was read."""
 
     def reset(self) -> None: ...
 
     def locked(self, key: str) -> AbstractContextManager[None]: ...
+
+    def locked_all(self, *keys: str) -> AbstractContextManager[None]: ...
 
     def transaction(self) -> AbstractContextManager[None]: ...
 
@@ -91,7 +119,7 @@ class InMemoryTechnicalUserRepository:
 
     def __init__(self, publisher: Publisher = _publish) -> None:
         self._lock = threading.RLock()   # guards the data; never held while a caller does slow work
-        self._key_locks = [threading.RLock() for _ in range(LOCK_STRIPES)]
+        self._key_locks = _KeyLocks()
         self._publisher = publisher
         self._depth = 0
         self._pending: list[tuple[str, dict]] = []   # events of the open transaction
@@ -112,7 +140,14 @@ class InMemoryTechnicalUserRepository:
 
     @contextmanager
     def locked(self, key: str) -> Iterator[None]:
-        with self._key_locks[zlib.crc32(key.encode()) % LOCK_STRIPES]:
+        with self._key_locks.hold(key):
+            yield
+
+    @contextmanager
+    def locked_all(self, *keys: str) -> Iterator[None]:
+        with ExitStack() as stack:
+            for key in sorted(set(keys)):   # the same order in every thread: no deadlock
+                stack.enter_context(self._key_locks.hold(key))
             yield
 
     @contextmanager
@@ -168,12 +203,17 @@ class InMemoryTechnicalUserRepository:
 
     def save(self, row: TechnicalUserRecord) -> None:
         with self._lock:
+            known = self._users.get(row["id"])
+            if known is not None and known["version"] != row["version"]:
+                raise Conflict(f"technical user {row['id']} changed since it was read")
             party = row["subscription_party"]
             if party and row["status"] != "DELETED" and any(
                     other["id"] != row["id"] and other["status"] != "DELETED"
                     and other["offer_subscription_id"] == row["offer_subscription_id"]
                     and other["subscription_party"] == party for other in self._users.values()):
                 raise ValueError("a subscription has one account per subscription party")   # README 5: unique
+            if known is not None:
+                row["version"] += 1
             self._users[row["id"]] = copy.deepcopy(row)
 
     def remove(self, user_id: str) -> None:
